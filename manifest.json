@@ -1,0 +1,9 @@
+{
+  "id": "worklog-timeline",
+  "name": "Worklog Timeline",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Turn a canvas into a worklog: date bands, card creation dates, project labels, an open-branch counter, auto-layout and a projects panel.",
+  "author": "Flint",
+  "isDesktopOnly": false
+}

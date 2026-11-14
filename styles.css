@@ -1,0 +1,109 @@
+/* Date band: dashed line with a label */
+.canvas-node.wl-band .canvas-node-container {
+  background: transparent !important;
+  border: none !important;
+  border-top: 2px dashed var(--text-accent) !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+}
+.canvas-node.wl-band .markdown-rendered,
+.canvas-node.wl-band .markdown-rendered p {
+  color: var(--text-accent);
+  font-weight: 600;
+  font-size: 1.1em;
+  padding-top: 2px;
+}
+
+/* Bands can't be resized: hide the handles */
+.canvas-node.wl-band .canvas-node-resizer { display: none !important; }
+
+/* Card creation date, shown on hover */
+.wl-stamp {
+  position: absolute;
+  top: -20px;
+  right: 0;
+  font-size: var(--font-ui-smaller);
+  line-height: 16px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+}
+.canvas-node:hover > .wl-stamp,
+.wl-show-stamps .wl-stamp {
+  opacity: 1;
+}
+
+/* Open branch highlight */
+.canvas-node.wl-open .canvas-node-container {
+  outline: 3px solid var(--color-orange);
+  outline-offset: 4px;
+}
+
+/* Project stripe left of a card */
+.wl-stripe {
+  position: absolute;
+  left: -9px;
+  top: 4px;
+  bottom: 4px;
+  width: 5px;
+  border-radius: 3px;
+  pointer-events: none;
+  background: var(--wl-color);
+}
+
+/* Project tag under an open branch */
+.wl-chip {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  display: flex;
+  gap: 8px;
+  font-size: var(--font-ui-smaller);
+  line-height: 16px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.wl-chip-item { display: inline-flex; align-items: center; gap: 4px; }
+.wl-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--wl-color); }
+
+/* Cards of paused projects are faded */
+.canvas-node.wl-paused { opacity: 0.4; }
+
+/* Projects panel */
+.wl-panel { padding: 8px 12px; font-size: var(--font-ui-small); }
+.wl-p-empty { color: var(--text-muted); padding: 12px 0; }
+.wl-p-title, .wl-p-section > summary {
+  margin: 14px 0 6px;
+  font-size: var(--font-ui-smaller);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+.wl-p-section > summary { cursor: pointer; }
+.wl-p-row { padding: 5px 0; border-bottom: 1px solid var(--background-modifier-border); }
+.wl-p-row.is-paused { opacity: 0.6; }
+.wl-p-head { display: flex; align-items: center; gap: 8px; }
+.wl-p-name { flex: 1; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wl-p-name:hover { color: var(--text-accent); }
+.wl-p-count {
+  min-width: 20px; text-align: center; font-size: var(--font-ui-smaller);
+  border-radius: 8px; padding: 0 6px; background: var(--background-modifier-hover);
+}
+.wl-p-btn { cursor: pointer; opacity: 0.5; font-size: var(--font-ui-small); }
+.wl-p-btn:hover { opacity: 1; }
+.wl-p-roots { display: flex; flex-wrap: wrap; gap: 6px; padding-left: 16px; margin-top: 2px; font-size: var(--font-ui-smaller); color: var(--text-faint); }
+.wl-p-root { cursor: pointer; color: var(--text-muted); text-decoration: underline dotted; }
+.wl-p-root:hover { color: var(--text-accent); }
+.wl-p-row.is-active { background: var(--background-modifier-hover); border-radius: 4px; }
+.wl-p-row.is-active .wl-p-name { color: var(--text-accent); font-weight: 600; }
+.wl-p-root.is-active { color: var(--text-accent); font-weight: 600; text-decoration: underline solid; }
+
+.wl-status { cursor: pointer; }
+.wl-status.wl-over { color: var(--color-orange); font-weight: 600; }
