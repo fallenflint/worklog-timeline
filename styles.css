@@ -105,11 +105,12 @@
 .wl-p-row.is-active .wl-p-name { color: var(--text-accent); font-weight: 600; }
 .wl-p-root.is-active { color: var(--text-accent); font-weight: 600; text-decoration: underline solid; }
 
-.wl-p-paused { padding-left: 16px; margin-top: 2px; font-size: var(--font-ui-smaller); color: var(--text-faint); }
-.wl-p-paused > summary { cursor: pointer; }
+.wl-p-tasks { padding-left: 16px; margin-top: 2px; font-size: var(--font-ui-smaller); color: var(--text-faint); }
+.wl-p-tasks > summary { cursor: pointer; }
 .wl-p-task { display: flex; align-items: center; gap: 6px; padding: 1px 0 1px 12px; }
 .wl-p-task-name { flex: 1; cursor: pointer; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wl-p-task-name:hover { color: var(--text-accent); }
+.wl-p-task.is-active .wl-p-task-name { color: var(--text-accent); font-weight: 600; }
 
 .wl-status { cursor: pointer; }
 .wl-status.wl-over { color: var(--color-orange); font-weight: 600; }

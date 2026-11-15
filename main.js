@@ -32,6 +32,8 @@ const STRINGS = {
     tasksPaused: "Tasks paused: {n}",
     tasksResumed: "Tasks resumed: {n}",
     pausedTasks: "paused · {n}",
+    openTasks: "open · {n}",
+    btnPauseTask: "Pause task",
     resumed: "“{name}” is back in progress",
     paused: "“{name}” paused",
     cardNotFound: "Card not found.",
@@ -80,6 +82,8 @@ const STRINGS = {
     tasksPaused: "Отложено задач: {n}",
     tasksResumed: "Вернул в работу задач: {n}",
     pausedTasks: "отложено · {n}",
+    openTasks: "в работе · {n}",
+    btnPauseTask: "Отложить задачу",
     resumed: "«{name}» снова в работе",
     paused: "«{name}» отложен",
     cardNotFound: "Карточка не найдена.",
@@ -311,19 +315,21 @@ function analyze(data, aliases, stamps) {
   // Catalog per project: roots (top to bottom), open branch count and the latest card.
   const catalog = new Map();
   const entry = (name) => {
-    if (!catalog.has(name)) catalog.set(name, { name, headers: [], cards: [], open: 0, pausedTasks: [], last: null, paused: paused.has(name) });
+    if (!catalog.has(name)) catalog.set(name, { name, headers: [], cards: [], open: 0, openTasks: [], pausedTasks: [], last: null, paused: paused.has(name) });
     return catalog.get(name);
   };
   for (const [id, name] of header) entry(name).headers.push(Object.assign({}, byId.get(id), { sub: headerSub.get(id) }));
   for (const n of nodes) for (const name of projects.get(n.id)) {
     const c = entry(name);
     c.cards.push(n);
-    if (openIds.has(n.id) && !taskPausedIds.has(n.id)) c.open++;
+    if (openIds.has(n.id) && !taskPausedIds.has(n.id)) { c.open++; c.openTasks.push(n); }
     if (marked.has(n.id) && !isDone(n)) c.pausedTasks.push(n);
   }
   for (const c of catalog.values()) {
     c.headers.sort((p, q) => p.y - q.y);
-    c.pausedTasks.sort((p, q) => (stamps[q.id] || 0) - (stamps[p.id] || 0) || p.y - q.y);
+    const newest = (p, q) => (stamps[q.id] || 0) - (stamps[p.id] || 0) || q.y - p.y;
+    c.openTasks.sort(newest);
+    c.pausedTasks.sort(newest);
     // Jump target = the work front: active open branches first, then any open card, then any card.
     // Within that pool, the newest by creation stamp; ties and unstamped cards go to the lowest one.
     const activeCards = c.cards.filter((n) => activeIds.has(n.id));
@@ -847,15 +853,16 @@ module.exports = class WorklogTimeline extends Plugin {
     const view = this.panelCanvas();
     const a = view && this.analysis.get(view);
     // What is selected on the canvas: highlight its project and root.
-    const sel = { names: new Set(), hdrs: new Set() };
+    const sel = { names: new Set(), hdrs: new Set(), ids: new Set() };
     if (a && view.canvas.selection) {
       for (const n of view.canvas.selection) {
+        sel.ids.add(n.id);
         for (const h of a.hdrs.get(n.id) || []) sel.hdrs.add(h);
         for (const name of a.projects.get(n.id) || []) sel.names.add(name);
       }
     }
-    const key = !a ? "none" : view.file.path + "|" + [...sel.hdrs].join(",") + "|" + [...a.catalog.values()]
-      .map((c) => `${c.name}:${c.open}:${c.paused}:${c.headers.map((h) => h.id + h.sub).join(",")}:${c.last && c.last.id}:${c.pausedTasks.map((n) => n.id + cleanName(n.text)).join(",")}`).join(";");
+    const key = !a ? "none" : view.file.path + "|" + [...sel.ids].join(",") + "|" + [...a.catalog.values()]
+      .map((c) => `${c.name}:${c.open}:${c.paused}:${c.headers.map((h) => h.id + h.sub).join(",")}:${c.last && c.last.id}:${[...c.openTasks, ...c.pausedTasks].map((n) => n.id + cleanName(n.text)).join(",")}`).join(";");
     if (key === this.panelKey) return;
     this.panelKey = key;
     for (const leaf of leaves) if (leaf.view instanceof ProjectsView) leaf.view.render(view, a, sel);
@@ -908,14 +915,14 @@ module.exports = class WorklogTimeline extends Plugin {
 };
 
 class ProjectsView extends ItemView {
-  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.openSleeping = false; this.openPaused = new Set(); }
+  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.openSleeping = false; this.openLists = new Set(); }
   getViewType() { return PANEL_TYPE; }
   getDisplayText() { return t("panelTitle"); }
   getIcon() { return "layers"; }
   async onOpen() { this.plugin.panelKey = ""; this.plugin.refreshPanels(); }
 
   render(view, a, sel) {
-    this.sel = sel || { names: new Set(), hdrs: new Set() };
+    this.sel = sel || { names: new Set(), hdrs: new Set(), ids: new Set() };
     const root = this.contentEl;
     root.empty();
     root.addClass("wl-panel");
@@ -971,25 +978,32 @@ class ProjectsView extends ItemView {
       });
     }
 
-    // Paused tasks of this project: an accordion under the row.
-    if (c.pausedTasks.length) {
-      const det = row.createEl("details", { cls: "wl-p-paused" });
-      det.open = this.openPaused.has(c.name);
-      det.addEventListener("toggle", () => {
-        if (det.open) this.openPaused.add(c.name); else this.openPaused.delete(c.name);
+    // Open and paused tasks of this project: accordions under the row.
+    this.taskList(row, view, c, "open", c.openTasks);
+    this.taskList(row, view, c, "paused", c.pausedTasks);
+  }
+
+  taskList(row, view, c, kind, list) {
+    if (!list.length) return;
+    const paused = kind === "paused";
+    const key = kind + ":" + c.name;
+    const det = row.createEl("details", { cls: "wl-p-tasks" });
+    det.open = this.openLists.has(key);
+    det.addEventListener("toggle", () => {
+      if (det.open) this.openLists.add(key); else this.openLists.delete(key);
+    });
+    det.createEl("summary", { text: t(paused ? "pausedTasks" : "openTasks", { n: list.length }) });
+    for (const n of list) {
+      const item = det.createDiv({ cls: "wl-p-task" });
+      item.toggleClass("is-active", this.sel.ids.has(n.id));
+      const label = item.createSpan({ cls: "wl-p-task-name", text: cleanName(n.text || n.file || "") || "…" });
+      label.addEventListener("click", () => this.plugin.jumpTo(view, n.id));
+      const btn = item.createSpan({ cls: "wl-p-btn", text: paused ? "▶" : "⏸" });
+      btn.setAttr("aria-label", t(paused ? "btnResume" : "btnPauseTask"));
+      btn.addEventListener("click", () => {
+        const node = view.canvas.nodes.get(n.id);
+        if (node) this.plugin.pauseTasks(view.canvas, [node], !paused);
       });
-      det.createEl("summary", { text: t("pausedTasks", { n: c.pausedTasks.length }) });
-      for (const n of c.pausedTasks) {
-        const item = det.createDiv({ cls: "wl-p-task" });
-        const label = item.createSpan({ cls: "wl-p-task-name", text: cleanName(n.text || n.file || "") || "…" });
-        label.addEventListener("click", () => this.plugin.jumpTo(view, n.id));
-        const play = item.createSpan({ cls: "wl-p-btn", text: "▶" });
-        play.setAttr("aria-label", t("btnResume"));
-        play.addEventListener("click", () => {
-          const node = view.canvas.nodes.get(n.id);
-          if (node) this.plugin.pauseTasks(view.canvas, [node], false);
-        });
-      }
     }
   }
 }
