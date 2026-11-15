@@ -27,6 +27,11 @@ const STRINGS = {
     menuPause: "Pause project “{name}”",
     menuResume: "Resume project “{name}”",
     menuLayout: "Lay out under parent",
+    menuPauseTask: "Pause task",
+    menuResumeTask: "Resume task",
+    tasksPaused: "Tasks paused: {n}",
+    tasksResumed: "Tasks resumed: {n}",
+    pausedTasks: "paused · {n}",
     resumed: "“{name}” is back in progress",
     paused: "“{name}” paused",
     cardNotFound: "Card not found.",
@@ -70,6 +75,11 @@ const STRINGS = {
     menuPause: "Отложить проект «{name}»",
     menuResume: "Вернуть «{name}» в работу",
     menuLayout: "Разложить под родителем",
+    menuPauseTask: "Отложить задачу",
+    menuResumeTask: "Вернуть задачу в работу",
+    tasksPaused: "Отложено задач: {n}",
+    tasksResumed: "Вернул в работу задач: {n}",
+    pausedTasks: "отложено · {n}",
     resumed: "«{name}» снова в работе",
     paused: "«{name}» отложен",
     cardNotFound: "Карточка не найдена.",
@@ -150,7 +160,7 @@ function bandGeometry(real) {
 function isDone(n) {
   if (String(n.color) === "4") return true;
   const text = n.text || "";
-  const first = (text.split("\n").map((s) => s.trim()).find(Boolean)) || "";
+  const first = ((text.split("\n").map((s) => s.trim()).find(Boolean)) || "").replace(/^⏸️?\s*/, "");
   if (first.startsWith("❌")) return true;
   const firstDone = /^(✅|☑|~~|[-*+]\s+\[[^ \]]\])/.test(first);
   const unchecked = /^\s*[-*+]\s+\[ \]/m.test(text);
@@ -182,6 +192,11 @@ function parseRoot(text) {
 
 const PAUSE_MARK = "⏸ ";
 const isPausedText = (text) => /^\s*⏸/.test(text || "");
+const setPauseMark = (text, on) => {
+  text = text || "";
+  if (!on) return text.replace(/^(\s*)⏸️?\s*/, "$1");
+  return isPausedText(text) ? text : PAUSE_MARK + text;
+};
 
 const short = (s) => (s.length > 24 ? s.slice(0, 22) + "…" : s);
 
@@ -256,8 +271,28 @@ function analyze(data, aliases, stamps) {
   const hdrs = new Map(nodes.map((n) => [n.id, hdrsOf(n.id)]));
   const projects = new Map(nodes.map((n) => [n.id, [...new Set(hdrs.get(n.id).map((h) => header.get(h)))]]));
 
-  // A card is paused if all of its projects are paused.
+  // ⏸ on a root pauses the whole project; ⏸ on any other card pauses that task
+  // and everything below it (a card whose every parent is paused is paused too).
+  const rootIds = new Set([...header.keys()].filter((id) => !parents.has(id)));
+  const marked = new Set(nodes.filter((n) => !rootIds.has(n.id) && isPausedText(n.text)).map((n) => n.id));
+  const tpMemo = new Map();
+  const tpVisiting = new Set();
+  const taskPaused = (id) => {
+    if (tpMemo.has(id)) return tpMemo.get(id);
+    if (marked.has(id)) { tpMemo.set(id, true); return true; }
+    const ps = parents.get(id) || [];
+    if (!ps.length || tpVisiting.has(id)) return false;
+    tpVisiting.add(id);
+    const r = ps.every(taskPaused);
+    tpVisiting.delete(id);
+    tpMemo.set(id, r);
+    return r;
+  };
+  const taskPausedIds = new Set(nodes.filter((n) => taskPaused(n.id)).map((n) => n.id));
+
+  // A card is paused if its task is paused or all of its projects are paused.
   const pausedIds = new Set(nodes.filter((n) => {
+    if (taskPausedIds.has(n.id)) return true;
     const names = projects.get(n.id);
     return names.length && names.every((x) => paused.has(x));
   }).map((n) => n.id));
@@ -276,17 +311,19 @@ function analyze(data, aliases, stamps) {
   // Catalog per project: roots (top to bottom), open branch count and the latest card.
   const catalog = new Map();
   const entry = (name) => {
-    if (!catalog.has(name)) catalog.set(name, { name, headers: [], cards: [], open: 0, last: null, paused: paused.has(name) });
+    if (!catalog.has(name)) catalog.set(name, { name, headers: [], cards: [], open: 0, pausedTasks: [], last: null, paused: paused.has(name) });
     return catalog.get(name);
   };
   for (const [id, name] of header) entry(name).headers.push(Object.assign({}, byId.get(id), { sub: headerSub.get(id) }));
   for (const n of nodes) for (const name of projects.get(n.id)) {
     const c = entry(name);
     c.cards.push(n);
-    if (openIds.has(n.id)) c.open++;
+    if (openIds.has(n.id) && !taskPausedIds.has(n.id)) c.open++;
+    if (marked.has(n.id) && !isDone(n)) c.pausedTasks.push(n);
   }
   for (const c of catalog.values()) {
     c.headers.sort((p, q) => p.y - q.y);
+    c.pausedTasks.sort((p, q) => (stamps[q.id] || 0) - (stamps[p.id] || 0) || p.y - q.y);
     // Latest = newest by creation stamp; without stamps, the lowest open card, else the lowest card.
     const stamped = c.cards.filter((n) => stamps[n.id] > 0);
     const openCards = c.cards.filter((n) => openIds.has(n.id));
@@ -298,7 +335,7 @@ function analyze(data, aliases, stamps) {
     }, null);
   }
 
-  return { byId, parents, children, hdrs, projects, open, active, activeIds, pausedIds, perProject, catalog };
+  return { byId, parents, children, hdrs, projects, open, active, activeIds, pausedIds, rootIds, marked, perProject, catalog };
 }
 
 /* ---------- auto-layout ----------
@@ -725,6 +762,16 @@ module.exports = class WorklogTimeline extends Plugin {
     const view = this.viewOf(canvas);
     const a = view && this.analysis.get(view);
     if (!a) return;
+    // Pause / resume the selected tasks themselves (roots stand for the whole project).
+    const tasks = targets.filter((n) => !a.rootIds.has(n.id));
+    if (tasks.length) {
+      const resume = tasks.every((n) => a.marked.has(n.id));
+      const taskCount = tasks.length > 1 ? ` (${tasks.length})` : "";
+      menu.addItem((item) => item.setTitle(t(resume ? "menuResumeTask" : "menuPauseTask") + taskCount)
+        .setIcon(resume ? "play" : "pause")
+        .onClick(() => this.pauseTasks(canvas, tasks, !resume)));
+    }
+
     const names = new Set();
     for (const n of targets) for (const name of a.projects.get(n.id) || []) names.add(name);
     for (const name of names) {
@@ -766,12 +813,22 @@ module.exports = class WorklogTimeline extends Plugin {
     if (!ids.size) for (const h of c.headers) ids.add(h.id);
     const targets = [...ids].map((id) => view.canvas.nodes.get(id)).filter(Boolean);
     this.updateNodes(view.canvas, targets, (d) => {
-      if (d.type !== "text") return d;
-      const text = d.text || "";
-      d.text = resume ? text.replace(/^(\s*)⏸️?\s*/, "$1") : (isPausedText(text) ? text : PAUSE_MARK + text);
+      if (d.type === "text") d.text = setPauseMark(d.text, !resume);
       return d;
     });
     new Notice(t(resume ? "resumed" : "paused", { name }));
+  }
+
+  /* Pause or resume single tasks: ⏸ at the start of the card's own text. */
+  pauseTasks(canvas, targets, on) {
+    const nodes = targets.filter((n) => n && canvas.nodes.get(n.id) === n);
+    const text = nodes.filter((n) => typeof n.getData !== "function" || n.getData().type === "text");
+    if (!text.length) return;
+    this.updateNodes(canvas, text, (d) => {
+      if (d.type === "text") d.text = setPauseMark(d.text, on);
+      return d;
+    });
+    new Notice(t(on ? "tasksPaused" : "tasksResumed", { n: text.length }));
   }
 
   /* ---------- projects panel ---------- */
@@ -800,7 +857,7 @@ module.exports = class WorklogTimeline extends Plugin {
       }
     }
     const key = !a ? "none" : view.file.path + "|" + [...sel.hdrs].join(",") + "|" + [...a.catalog.values()]
-      .map((c) => `${c.name}:${c.open}:${c.paused}:${c.headers.map((h) => h.id + h.sub).join(",")}:${c.last && c.last.id}`).join(";");
+      .map((c) => `${c.name}:${c.open}:${c.paused}:${c.headers.map((h) => h.id + h.sub).join(",")}:${c.last && c.last.id}:${c.pausedTasks.map((n) => n.id + cleanName(n.text)).join(",")}`).join(";");
     if (key === this.panelKey) return;
     this.panelKey = key;
     for (const leaf of leaves) if (leaf.view instanceof ProjectsView) leaf.view.render(view, a, sel);
@@ -853,7 +910,7 @@ module.exports = class WorklogTimeline extends Plugin {
 };
 
 class ProjectsView extends ItemView {
-  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.openSleeping = false; }
+  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.openSleeping = false; this.openPaused = new Set(); }
   getViewType() { return PANEL_TYPE; }
   getDisplayText() { return t("panelTitle"); }
   getIcon() { return "layers"; }
@@ -914,6 +971,27 @@ class ProjectsView extends ItemView {
         link.setAttr("aria-label", cleanName(h.text || "") || t("rootN", { n: i + 1 }));
         link.addEventListener("click", () => this.plugin.jumpTo(view, h.id));
       });
+    }
+
+    // Paused tasks of this project: an accordion under the row.
+    if (c.pausedTasks.length) {
+      const det = row.createEl("details", { cls: "wl-p-paused" });
+      det.open = this.openPaused.has(c.name);
+      det.addEventListener("toggle", () => {
+        if (det.open) this.openPaused.add(c.name); else this.openPaused.delete(c.name);
+      });
+      det.createEl("summary", { text: t("pausedTasks", { n: c.pausedTasks.length }) });
+      for (const n of c.pausedTasks) {
+        const item = det.createDiv({ cls: "wl-p-task" });
+        const label = item.createSpan({ cls: "wl-p-task-name", text: cleanName(n.text || n.file || "") || "…" });
+        label.addEventListener("click", () => this.plugin.jumpTo(view, n.id));
+        const play = item.createSpan({ cls: "wl-p-btn", text: "▶" });
+        play.setAttr("aria-label", t("btnResume"));
+        play.addEventListener("click", () => {
+          const node = view.canvas.nodes.get(n.id);
+          if (node) this.plugin.pauseTasks(view.canvas, [node], false);
+        });
+      }
     }
   }
 }
