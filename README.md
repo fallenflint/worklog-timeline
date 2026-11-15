@@ -16,12 +16,15 @@ and the plugin keeps track of where you are.
 - **Open-branch counter.** The status bar shows how many leaf cards are still open
   against your comfort limit. Click it to highlight them.
 - **Card menu.** Right-click a card or a selection: *Done ✅*, *Cancelled ❌*,
-  *Pause project ⏸* and *Lay out under parent*. Pausing adds `⏸` to the project's roots,
-  so it is visible in the canvas and undoable with Ctrl+Z.
+  *Pause task*, *Pause project ⏸* and *Lay out under parent*. A pause is a `⏸` at the start
+  of the card's text: on a root it pauses the whole project, on any other card it pauses that
+  task and everything below it. It is visible in the canvas, undoable with Ctrl+Z, and you can
+  type it by hand.
 - **Auto-layout.** When you drag a new card out of a parent, it is centered under it
   and all open branches line up in one row. Creation and layout undo in a single step.
 - **Projects panel.** A side panel lists projects (in progress, paused, dormant)
-  with a smooth jump to each project's latest card or any of its roots.
+  with a smooth jump to each project's work front (its newest open branch) or any of its roots.
+  Each project has collapsible lists of its open and paused tasks, with pause and resume buttons.
 
 A card counts as done when it is green (color 4), starts with ❌, or its first line starts
 with ✅ / ☑ / `~~` / `- [x]` and it has no unchecked `- [ ]`.
