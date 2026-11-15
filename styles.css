@@ -14,8 +14,18 @@
   padding-top: 2px;
 }
 
-/* Bands can't be resized: hide the handles */
+/* Bands lie under the cards */
+.canvas-node.wl-band { z-index: 0 !important; }
+
+/* Bands can't be resized: hide the handles where possible, and show the band's box on hover
+ * and selection so it's clear what the handles belong to. */
 .canvas-node.wl-band .canvas-node-resizer { display: none !important; }
+.canvas-node.wl-band:hover .canvas-node-container,
+.canvas-node.wl-band.is-focused .canvas-node-container,
+.canvas-node.wl-band.is-selected .canvas-node-container {
+  outline: 1px dashed var(--text-faint);
+  outline-offset: 0;
+}
 
 /* Card creation date, shown on hover */
 .wl-stamp {

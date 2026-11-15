@@ -3,14 +3,18 @@
  * No build step: plain CommonJS. Parts of the Canvas API are undocumented, so every call
  * into it is guarded. */
 const obsidian = require("obsidian");
-const { Plugin, Notice, PluginSettingTab, Setting, ItemView } = obsidian;
+const { Plugin, Notice, PluginSettingTab, Setting, ItemView, Modal } = obsidian;
 
 /* ---------- i18n ----------
  * English is the base. Add a language by adding a table with the same keys;
  * missing keys fall back to English. */
 const STRINGS = {
   en: {
-    cmdBand: "Add today's date band at screen center",
+    cmdBand: "Add a date band at screen center",
+    bandTitle: "Date band",
+    bandDate: "Date",
+    bandDateDesc: "Past and future dates work too. If this date already has a band, it moves here.",
+    bandOk: "Place",
     cmdHighlight: "Highlight open branches",
     cmdPanel: "Open projects panel",
     cmdStamps: "Toggle creation dates on all cards",
@@ -58,9 +62,22 @@ const STRINGS = {
     setProjectsDesc: "A colored stripe left of each card and a project tag under open branches.",
     setAliases: "Project aliases",
     setAliasesDesc: "One rule per line: “Eve6 Demo = Eve6”. Left: a root's name. Right: the project it counts as.",
+    setAutoBand: "Automatic date band",
+    setAutoBandDesc: "When a new card starts a new session, a band with the date goes under all cards and the new card goes below it.",
+    autoOff: "Off",
+    autoBreak: "After a break",
+    autoCalendar: "Each calendar day",
+    setBreak: "Break length, hours",
+    setBreakDesc: "A new card after this many hours without new cards starts a session; the band gets the date it started. A night session past midnight stays one session.",
+    setDayStart: "Day starts at, hour",
+    setDayStartDesc: "Cards made before this hour count toward the previous day.",
   },
   ru: {
-    cmdBand: "Рубеж «сегодня» в центре экрана",
+    cmdBand: "Рубеж даты в центре экрана",
+    bandTitle: "Рубеж даты",
+    bandDate: "Дата",
+    bandDateDesc: "Можно задним числом и на будущее. Если у этой даты уже есть рубеж, он переедет сюда.",
+    bandOk: "Поставить",
     cmdHighlight: "Подсветить открытые ветки",
     cmdPanel: "Панель проектов",
     cmdStamps: "Показывать даты всех карточек",
@@ -108,6 +125,15 @@ const STRINGS = {
     setProjectsDesc: "Цветная полоска слева у карточек и ярлычок проекта под открытыми ветками.",
     setAliases: "Склейка проектов",
     setAliasesDesc: "По строке на правило: «Eve6 Demo = Eve6». Слева — как называется корень, справа — каким проектом считать.",
+    setAutoBand: "Рубеж даты автоматически",
+    setAutoBandDesc: "Когда новая карточка начинает новую сессию, под всеми карточками встаёт рубеж с датой, а новая карточка — под ним.",
+    autoOff: "Выключено",
+    autoBreak: "После перерыва",
+    autoCalendar: "Каждый календарный день",
+    setBreak: "Перерыв, часов",
+    setBreakDesc: "Новая карточка после стольких часов без новых карточек начинает сессию, на рубеже — дата её начала. Ночная сессия через полночь остаётся одной.",
+    setDayStart: "День начинается в, час",
+    setDayStartDesc: "Карточки до этого часа считаются предыдущим днём.",
   },
 };
 
@@ -119,8 +145,8 @@ function detectLanguage() {
 }
 const LANG = detectLanguage();
 const DICT = STRINGS[LANG] || STRINGS[LANG.split("-")[0]] || STRINGS.en;
-/* Date formatting follows the UI language; "en" uses the system locale. */
-const DATE_LOCALE = DICT === STRINGS.en ? undefined : LANG;
+/* Dates follow Obsidian's UI language, not the system locale. */
+const DATE_LOCALE = LANG;
 
 function t(key, vars) {
   let s = DICT[key] != null ? DICT[key] : STRINGS.en[key];
@@ -130,7 +156,10 @@ function t(key, vars) {
 
 const BAND_PREFIX = "wl-band-";
 const PANEL_TYPE = "worklog-projects";
-const DEFAULTS = { limit: 5, showAllStamps: false, projects: true, aliases: "", autoLayout: true, stamps: {} };
+const DEFAULTS = {
+  limit: 5, showAllStamps: false, projects: true, aliases: "", autoLayout: true,
+  autoBand: "break", breakHours: 6, dayStart: 4, stamps: {},
+};
 const BAND_H = 60;
 
 /* ---------- dates and bands ---------- */
@@ -150,6 +179,46 @@ function stampLabel(ts) {
 }
 
 const isBand = (n) => typeof n.id === "string" && n.id.startsWith(BAND_PREFIX);
+
+/* The band's date lives in its id (wl-band-YYYY-MM-DD-xxxxxx); its text is free to edit. */
+function bandDate(n) {
+  const m = isBand(n) && /^wl-band-(\d{4}-\d{2}-\d{2})/.exec(n.id);
+  return m ? m[1] : null;
+}
+
+function parseYmd(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || "");
+  return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
+}
+
+/* The day a moment belongs to, when the day starts at `dayStart` o'clock. */
+function logicalDay(ts, dayStart) {
+  const d = new Date(ts - (dayStart || 0) * 3600e3);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+function makeBand(day, geo, y) {
+  return {
+    id: BAND_PREFIX + ymd(day) + "-" + Math.random().toString(36).slice(2, 8),
+    type: "text",
+    text: bandLabel(day),
+    x: geo.x,
+    y: Math.round(y),
+    width: geo.width,
+    height: BAND_H,
+  };
+}
+
+/* Where the card was dropped decides: the front row stays below the lowest band whose line
+ * is above the card's middle. Dropped above a band, the row doesn't get pushed under it. */
+function bandFloor(nodes, card, gap) {
+  const mid = card.y + card.height / 2;
+  let floor = -Infinity;
+  for (const n of nodes) {
+    if (isBand(n) && n.y < mid) floor = Math.max(floor, n.y + n.height + gap);
+  }
+  return floor;
+}
 
 /* A band spans all cards plus 200px on each side. */
 function bandGeometry(real) {
@@ -348,7 +417,7 @@ function analyze(data, aliases, stamps) {
  * Then every active branch lines up in that row, and row neighbors are pushed aside.
  * The gap matches the built-in "Arrange" commands (canvas grid spacing).
  * Returns {id: {x, y}} for the cards that move. */
-function planLayout(a, childId, parentId, gap) {
+function planLayout(a, childId, parentId, gap, minY) {
   const GAP = gap || 20;
   const parent = a.byId.get(parentId);
   const child = a.byId.get(childId);
@@ -369,7 +438,8 @@ function planLayout(a, childId, parentId, gap) {
   // front cards only ever move down, never up onto their own ancestors.
   const front = a.active.filter((n) => (a.parents.get(n.id) || []).length);
   const mates = front.filter((n) => !anchors.has(n.id));
-  const frontY = Math.round(Math.max(parent.y + parent.height + GAP, ...mates.map((n) => n.y)));
+  const frontY = Math.round(Math.max(parent.y + parent.height + GAP, minY == null ? -Infinity : minY,
+    ...mates.map((n) => n.y)));
   if (sibs.length <= 1) {
     set(child, { x: Math.round(pcx - child.width / 2) });
   } else if (leafRow) {
@@ -424,7 +494,7 @@ module.exports = class WorklogTimeline extends Plugin {
 
     this.registerView(PANEL_TYPE, (leaf) => new ProjectsView(leaf, this));
 
-    this.addRibbonIcon("calendar-plus", t("cmdBand"), () => this.placeBand());
+    this.addRibbonIcon("calendar-plus", t("cmdBand"), () => this.askBand());
     this.addRibbonIcon("layers", t("cmdPanel"), () => this.openPanel());
 
     const onCanvas = (fn) => (checking) => {
@@ -432,7 +502,7 @@ module.exports = class WorklogTimeline extends Plugin {
       if (!checking) fn();
       return true;
     };
-    this.addCommand({ id: "band-here", name: t("cmdBand"), checkCallback: onCanvas(() => this.placeBand()) });
+    this.addCommand({ id: "band-here", name: t("cmdBand"), checkCallback: onCanvas(() => this.askBand()) });
     this.addCommand({ id: "toggle-open", name: t("cmdHighlight"), checkCallback: onCanvas(() => this.toggleHighlight()) });
     this.addCommand({ id: "open-panel", name: t("cmdPanel"), callback: () => this.openPanel() });
     this.addCommand({
@@ -552,11 +622,22 @@ module.exports = class WorklogTimeline extends Plugin {
     const now = Date.now();
 
     // 1. Stamp new cards. On first sight of a canvas, existing cards get no date (0).
+    let lastWork = 0; // newest stamp among cards on the canvas before this tick
+    const freshCards = [];
     for (const id of nodes.keys()) {
-      if (!(id in stamps)) { stamps[id] = first ? 0 : now; this.dirty = true; }
+      const band = id.startsWith(BAND_PREFIX);
+      if (!(id in stamps)) {
+        stamps[id] = first ? 0 : now;
+        this.dirty = true;
+        if (!first && !band) freshCards.push(id);
+      } else if (!band && stamps[id] > lastWork) lastWork = stamps[id];
     }
 
     let data = canvas.getData();
+    // A couple of new cards may start a new session (a sync bringing many doesn't count).
+    if (freshCards.length && freshCards.length <= 3 && this.autoBand(canvas, data, freshCards, lastWork, now)) {
+      data = canvas.getData();
+    }
     const aliases = parseAliases(this.settings.aliases);
     let a = analyze(data, aliases, stamps);
 
@@ -576,7 +657,8 @@ module.exports = class WorklogTimeline extends Plugin {
         && !a.children.has(e.toNode) && (a.parents.get(e.toNode) || []).length === 1);
       if (this.settings.autoLayout && fresh.length && added.length <= 2) {
         const e = fresh[fresh.length - 1];
-        if (this.applyMoves(canvas, planLayout(a, e.toNode, e.fromNode, canvas.gridSpacing), true)) {
+        const floor = this.floorFor(canvas, data, e.toNode);
+        if (this.applyMoves(canvas, planLayout(a, e.toNode, e.fromNode, canvas.gridSpacing, floor), true)) {
           data = canvas.getData();
           a = analyze(data, aliases, stamps);
         }
@@ -663,7 +745,7 @@ module.exports = class WorklogTimeline extends Plugin {
     const a = view && this.analysis.get(view);
     const parent = a && (a.parents.get(id) || [])[0];
     if (!parent) { new Notice(t("noParent")); return; }
-    this.applyMoves(canvas, planLayout(a, id, parent, canvas.gridSpacing));
+    this.applyMoves(canvas, planLayout(a, id, parent, canvas.gridSpacing, this.floorFor(canvas, canvas.getData(), id)));
     this.tick();
   }
 
@@ -717,8 +799,78 @@ module.exports = class WorklogTimeline extends Plugin {
     }
   }
 
-  /* Put today's band at the center of the screen (moves it if today's band already exists). */
-  placeBand() {
+  /* The y new work must stay below: under today's (and earlier) bands. */
+  floorFor(canvas, data, cardId) {
+    const card = (data.nodes || []).find((n) => n.id === cardId);
+    if (!card) return null;
+    const f = bandFloor(data.nodes, card, canvas.gridSpacing || 20);
+    return Number.isFinite(f) ? f : null;
+  }
+
+  dayStart() {
+    const h = parseInt(this.settings.dayStart, 10);
+    return h >= 0 && h < 24 ? h : 4;
+  }
+
+  /* Auto band: a new card that starts a session puts a dated band under all the older cards
+   * and drops the new cards below it. A session starts after a break (the band gets the real
+   * date it started, so a night past midnight stays one session) or on a new day counted from
+   * the "day starts at" hour. A canvas with no bands yet gets one on its first new card.
+   * One band per date. */
+  autoBand(canvas, data, freshIds, lastWork, now) {
+    const mode = this.settings.autoBand;
+    if (mode !== "break" && mode !== "calendar") return false;
+    const ds = this.dayStart();
+    const day = mode === "calendar" ? logicalDay(now, ds) : logicalDay(now, 0);
+    const key = ymd(day);
+    if (data.nodes.some((n) => bandDate(n) === key)) return false;
+    const hasBands = data.nodes.some(isBand);
+    if (hasBands && lastWork) {
+      const hours = parseFloat(this.settings.breakHours);
+      if (mode === "break" && now - lastWork < (hours > 0 ? hours : 6) * 3600e3) return false;
+      if (mode === "calendar" && ymd(logicalDay(lastWork, ds)) === key) return false;
+    }
+    const fresh = new Set(freshIds);
+    const real = data.nodes.filter((n) => !isBand(n));
+    const old = real.filter((n) => !fresh.has(n.id) && n.type !== "group");
+    const news = real.filter((n) => fresh.has(n.id));
+    if (!news.length) return false;
+    const gap = canvas.gridSpacing || 20;
+    // Under all the older cards; on an empty canvas, just above the first card.
+    const y = old.length ? Math.max(...old.map((n) => n.y + n.height)) + gap
+      : Math.min(...news.map((n) => n.y)) - gap - BAND_H;
+    const band = makeBand(day, bandGeometry(real), y);
+    let added = false;
+    if (typeof canvas.importData === "function") {
+      // Adds the band without rebuilding the canvas, so a card being typed in keeps focus.
+      try { canvas.importData({ nodes: [band], edges: [] }); added = canvas.nodes.has(band.id); } catch (e) { console.error("worklog-timeline", e); }
+    }
+    if (!added) {
+      data.nodes.unshift(band);
+      canvas.setData(data);
+    }
+    const floor = band.y + BAND_H + gap;
+    for (const id of freshIds) {
+      const node = canvas.nodes.get(id);
+      if (node && node.y < floor && typeof node.moveAndResize === "function") {
+        node.moveAndResize({ x: node.x, y: floor, width: node.width, height: node.height });
+      }
+    }
+    // Merge into the card-creation step: one ctrl+z removes the card and its band.
+    if (typeof canvas.overrideHistory === "function") canvas.overrideHistory();
+    else if (typeof canvas.requestSave === "function") canvas.requestSave();
+    return true;
+  }
+
+  askBand() {
+    const view = this.activeCanvas();
+    if (!view) { new Notice(t("openCanvas")); return; }
+    new BandModal(this.app, ymd(new Date()), (d) => this.placeBand(d)).open();
+  }
+
+  /* Put the band for `day` at the center of the screen. If that date has a band, move it
+   * there and keep its text (it may have been renamed, e.g. to a stage). */
+  placeBand(day) {
     const view = this.activeCanvas();
     if (!view) { new Notice(t("openCanvas")); return; }
     const canvas = view.canvas;
@@ -728,19 +880,9 @@ module.exports = class WorklogTimeline extends Plugin {
     const geo = bandGeometry(real);
     const maxY = Math.max(...real.map((n) => n.y + n.height));
     const cy = Number.isFinite(canvas.y) ? canvas.y : maxY + 100;
-    const today = new Date();
-    const prefix = BAND_PREFIX + ymd(today);
-    const band = {
-      id: prefix + "-" + Math.random().toString(36).slice(2, 8),
-      type: "text",
-      text: bandLabel(today),
-      x: geo.x,
-      y: Math.round(cy - BAND_H / 2),
-      width: geo.width,
-      height: BAND_H,
-    };
-    const existing = data.nodes.find((n) => typeof n.id === "string" && n.id.startsWith(prefix));
-    if (existing) Object.assign(existing, { x: band.x, y: band.y, width: band.width, text: band.text });
+    const band = makeBand(day, geo, cy - BAND_H / 2);
+    const existing = data.nodes.find((n) => bandDate(n) === ymd(day));
+    if (existing) Object.assign(existing, { x: band.x, y: band.y, width: band.width, height: BAND_H });
     else data.nodes.unshift(band); // first, so it renders below the cards
     canvas.setData(data);
     canvas.requestSave();
@@ -1013,6 +1155,33 @@ class ProjectsView extends ItemView {
   }
 }
 
+class BandModal extends Modal {
+  constructor(app, value, onPick) { super(app); this.value = value; this.onPick = onPick; }
+  onOpen() {
+    this.titleEl.setText(t("bandTitle"));
+    let input;
+    const submit = () => {
+      const d = parseYmd(input.value);
+      if (!d) return;
+      this.close();
+      this.onPick(d);
+    };
+    new Setting(this.contentEl)
+      .setName(t("bandDate"))
+      .setDesc(t("bandDateDesc"))
+      .addText((c) => {
+        input = c.inputEl;
+        input.type = "date";
+        c.setValue(this.value);
+        input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } });
+      });
+    new Setting(this.contentEl)
+      .addButton((b) => b.setButtonText(t("bandOk")).setCta().onClick(submit));
+    window.setTimeout(() => input && input.focus(), 0);
+  }
+  onClose() { this.contentEl.empty(); }
+}
+
 class WorklogSettings extends PluginSettingTab {
   constructor(app, plugin) { super(app, plugin); this.plugin = plugin; }
   display() {
@@ -1032,6 +1201,34 @@ class WorklogSettings extends PluginSettingTab {
       .addToggle((c) => c.setValue(p.settings.autoLayout !== false).onChange(async (v) => {
         p.settings.autoLayout = v; await p.save();
       }));
+    const mode = ["off", "break", "calendar"].includes(p.settings.autoBand) ? p.settings.autoBand : "break";
+    new Setting(containerEl)
+      .setName(t("setAutoBand"))
+      .setDesc(t("setAutoBandDesc"))
+      .addDropdown((c) => c
+        .addOption("break", t("autoBreak"))
+        .addOption("calendar", t("autoCalendar"))
+        .addOption("off", t("autoOff"))
+        .setValue(mode)
+        .onChange(async (v) => { p.settings.autoBand = v; await p.save(); this.display(); }));
+    if (mode === "break") {
+      new Setting(containerEl)
+        .setName(t("setBreak"))
+        .setDesc(t("setBreakDesc"))
+        .addText((c) => c.setValue(String(p.settings.breakHours)).onChange(async (v) => {
+          const n = parseFloat(v);
+          if (n > 0) { p.settings.breakHours = n; await p.save(); }
+        }).inputEl.type = "number");
+    }
+    if (mode === "calendar") {
+      new Setting(containerEl)
+        .setName(t("setDayStart"))
+        .setDesc(t("setDayStartDesc"))
+        .addText((c) => c.setValue(String(p.dayStart())).onChange(async (v) => {
+          const n = parseInt(v, 10);
+          if (n >= 0 && n < 24) { p.settings.dayStart = n; await p.save(); }
+        }).inputEl.type = "number");
+    }
     new Setting(containerEl)
       .setName(t("setStamps"))
       .setDesc(t("setStampsDesc"))
