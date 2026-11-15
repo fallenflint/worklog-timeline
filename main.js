@@ -357,11 +357,19 @@ function planLayout(a, childId, parentId, gap) {
   const at = (n) => pos.get(n.id) || { x: n.x, y: n.y };
   const set = (n, p) => pos.set(n.id, Object.assign({}, at(n), p));
 
-  const frontY = Math.round(parent.y + parent.height + GAP);
   const pcx = parent.x + parent.width / 2;
 
   const sibs = (a.children.get(parentId) || []).map((id) => a.byId.get(id)).filter(Boolean);
   const leafRow = sibs.length > 1 && sibs.every((n) => !a.children.has(n.id));
+  const anchors = new Set([childId]);
+  if (leafRow) for (const n of sibs) anchors.add(n.id);
+
+  // The front = active branch ends (lone project cards with no parent aren't branches).
+  // It sits under the parent, or lower if other branch ends already are lower:
+  // front cards only ever move down, never up onto their own ancestors.
+  const front = a.active.filter((n) => (a.parents.get(n.id) || []).length);
+  const mates = front.filter((n) => !anchors.has(n.id));
+  const frontY = Math.round(Math.max(parent.y + parent.height + GAP, ...mates.map((n) => n.y)));
   if (sibs.length <= 1) {
     set(child, { x: Math.round(pcx - child.width / 2) });
   } else if (leafRow) {
@@ -374,17 +382,14 @@ function planLayout(a, childId, parentId, gap) {
     set(child, { x: Math.round(right + GAP) });
   }
 
-  for (const n of a.active) set(n, { y: frontY });
+  for (const n of front) set(n, { y: frontY });
   set(child, { y: frontY });
 
   // The new card (and its leaf siblings) stay under the parent; push row neighbors outward.
-  const anchors = new Set([childId]);
-  if (leafRow) for (const n of sibs) anchors.add(n.id);
   const anchorNodes = [...anchors].map((id) => a.byId.get(id));
   const L = Math.min(...anchorNodes.map((n) => at(n).x));
   const R = Math.max(...anchorNodes.map((n) => at(n).x + n.width));
   const mid = (L + R) / 2;
-  const mates = a.active.filter((n) => !anchors.has(n.id));
   const right = mates.filter((n) => at(n).x + n.width / 2 >= mid).sort((p, q) => at(p).x - at(q).x);
   const left = mates.filter((n) => at(n).x + n.width / 2 < mid).sort((p, q) => at(q).x - at(p).x);
   let cur = R + GAP;
