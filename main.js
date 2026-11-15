@@ -737,6 +737,7 @@ module.exports = class WorklogTimeline extends Plugin {
     }
 
     this.analysis.set(view, a);
+    if (!dragging) this.dropBandEdges(canvas, data);
     this.fitBands(canvas, data);
 
     // 3. Card decorations.
@@ -863,6 +864,22 @@ module.exports = class WorklogTimeline extends Plugin {
     if (!parent) { new Notice(t("noParent")); return; }
     this.applyMoves(canvas, planLayout(a, id, parent, canvas.gridSpacing, this.floorFor(canvas, canvas.getData(), id)), false, id);
     this.tick();
+  }
+
+  /* Bands take no arrows. CSS already hides their handles and lets a dragged arrow pass
+   * through them; this removes any arrow that still got attached to a band. */
+  dropBandEdges(canvas, data) {
+    if (!canvas.edges || typeof canvas.removeEdge !== "function") return;
+    const bad = (data.edges || []).filter((e) =>
+      String(e.fromNode).startsWith(BAND_PREFIX) || String(e.toNode).startsWith(BAND_PREFIX));
+    let removed = false;
+    for (const e of bad) {
+      const edge = canvas.edges.get(e.id);
+      if (edge) { canvas.removeEdge(edge); removed = true; }
+    }
+    if (!removed) return;
+    if (typeof canvas.overrideHistory === "function") canvas.overrideHistory();
+    else if (typeof canvas.requestSave === "function") canvas.requestSave(false);
   }
 
   /* Bands can't be resized: keep height BAND_H and full canvas width. */

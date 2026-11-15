@@ -5,10 +5,27 @@ and the plugin keeps track of where you are.
 
 [Русская версия](README.ru.md)
 
-## Features
+![Two projects on a canvas with date bands, color stripes and the projects panel](assets/overview.png)
 
-- **Date bands.** One command drops a dashed "today" line across the whole canvas at the
-  center of the screen. Bands keep their full width automatically.
+- The top card is a project. All of its descendants get its color.
+- Any card can be marked done or cancelled: green color, ✅ or ❌.
+- Every card has a creation date.
+- Leaves are your current work. There can be any number of them, but 5 is the comfortable
+  limit of parallel tasks for most people.
+- When you add a new card or drag a current one, all active ones line up in one row.
+- Date bands split time into days.
+- Pause a whole project or just specific tasks.
+- A project whose last task is done and has nothing after it goes on the shelf
+  (*Dormant*): pick it up again whenever you need.
+
+## Details
+
+- **Date bands.** A dashed dated line across the whole canvas. By default it appears by itself:
+  the first card after a 6-hour break gets a band above it, so a night session past midnight
+  stays one day; a canvas without bands gets one on its first new card. New cards line up
+  below a band if you drop them below it, and stay above it if you drop them above. The setting can switch to "each calendar day" (the day starts at 4:00) or off.
+  The command puts a band for any date, past or future, at the center of the screen; one band
+  per date. The label is plain text: rename it to a stage if you like.
 - **Creation dates.** Every new card gets a small timestamp, shown on hover or always.
 - **Projects.** A card belongs to the nearest root above it (a card with no incoming arrows).
   Each project gets a color stripe, and open branches get a project tag.

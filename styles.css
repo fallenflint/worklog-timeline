@@ -124,3 +124,8 @@
 
 .wl-status { cursor: pointer; }
 .wl-status.wl-over { color: var(--color-orange); font-weight: 600; }
+
+/* Bands take no arrows: no connection handles, and a dragged arrow passes through them */
+.canvas-node.wl-band .canvas-node-connection-point { display: none !important; }
+.canvas.is-connecting .canvas-node.wl-band,
+.canvas.is-connecting .canvas-node.wl-band * { pointer-events: none !important; }
