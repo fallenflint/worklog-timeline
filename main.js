@@ -475,6 +475,64 @@ function planLayout(a, childId, parentId, gap, minY) {
   return moves;
 }
 
+/* A current card was dragged: the whole front row lines up at its new height.
+ * The dragged card keeps its x; row neighbors get pushed aside if they overlap it.
+ * The row never goes above any front card's parent, nor above the band it was dropped under. */
+function planRealign(a, id, gap, minY) {
+  const GAP = gap || 20;
+  const card = a.byId.get(id);
+  const front = a.active.filter((n) => (a.parents.get(n.id) || []).length);
+  if (!card || !front.some((n) => n.id === id)) return {};
+  const parentBottom = (n) => Math.max(...(a.parents.get(n.id) || [])
+    .map((p) => a.byId.get(p)).filter(Boolean).map((p) => p.y + p.height));
+  const rowY = Math.round(Math.max(card.y, minY == null ? -Infinity : minY,
+    ...front.map((n) => parentBottom(n) + GAP)));
+
+  const pos = new Map();
+  const at = (n) => pos.get(n.id) || { x: n.x, y: n.y };
+  const set = (n, p) => pos.set(n.id, Object.assign({}, at(n), p));
+  for (const n of front) set(n, { y: rowY });
+
+  const mates = front.filter((n) => n.id !== id);
+  const L = card.x, R = card.x + card.width, mid = (L + R) / 2;
+  const right = mates.filter((n) => n.x + n.width / 2 >= mid).sort((p, q) => p.x - q.x);
+  const left = mates.filter((n) => n.x + n.width / 2 < mid).sort((p, q) => q.x - p.x);
+  let cur = R + GAP;
+  for (const n of right) { if (at(n).x < cur) set(n, { x: Math.round(cur) }); cur = at(n).x + n.width + GAP; }
+  cur = L - GAP;
+  for (const n of left) { if (at(n).x + n.width > cur) set(n, { x: Math.round(cur - n.width) }); cur = at(n).x - GAP; }
+
+  const moves = {};
+  for (const [nid, p] of pos) {
+    const n = a.byId.get(nid);
+    if (Math.abs(n.x - p.x) > 0.5 || Math.abs(n.y - p.y) > 0.5) moves[nid] = p;
+  }
+  return moves;
+}
+
+/* After a layout: a band never cuts a laid-out card. If one of `ids` starts above a band
+ * and runs into it, the band and everything below it move down by the same amount, so
+ * the layout below (more cards, more bands) stays as it was. Bands only move down. */
+function planBandPush(nodes, ids, gap) {
+  const GAP = gap || 20;
+  const pos = new Map(nodes.map((n) => [n.id, n.y]));
+  const watch = nodes.filter((n) => ids.has(n.id) && !isBand(n));
+  const bands = nodes.filter(isBand).sort((p, q) => p.y - q.y);
+  for (const band of bands) {
+    const by = pos.get(band.id);
+    let need = 0;
+    for (const n of watch) {
+      const y = pos.get(n.id);
+      if (y < by && y + n.height + GAP > by) need = Math.max(need, y + n.height + GAP - by);
+    }
+    if (need <= 0) continue;
+    for (const n of nodes) if (pos.get(n.id) >= by) pos.set(n.id, pos.get(n.id) + Math.round(need));
+  }
+  const moves = {};
+  for (const n of nodes) if (pos.get(n.id) !== n.y) moves[n.id] = { x: n.x, y: pos.get(n.id) };
+  return moves;
+}
+
 /* ---------- plugin ---------- */
 module.exports = class WorklogTimeline extends Plugin {
   async onload() {
@@ -539,6 +597,19 @@ module.exports = class WorklogTimeline extends Plugin {
       try { if (this.activeCanvas()) this.refreshPanels(); } catch (e) { console.error("worklog-timeline", e); }
     }, 30);
     this.registerDomEvent(document, "pointerup", quick);
+
+    // Dragging a current card lines the front row up again. Snapshot the current cards on
+    // pointer down; on pointer up, if exactly one of them moved (and wasn't resized), realign.
+    this.registerDomEvent(document, "pointerdown", () => {
+      try { this.dragSnap = this.snapFront(); } catch (e) { this.dragSnap = null; }
+    });
+    this.registerDomEvent(document, "pointerup", () => {
+      const snap = this.dragSnap;
+      this.dragSnap = null;
+      if (snap) window.setTimeout(() => {
+        try { this.realignAfterDrag(snap); } catch (e) { console.error("worklog-timeline", e); }
+      }, 50);
+    });
     this.registerDomEvent(document, "keyup", quick);
 
     this.registerInterval(window.setInterval(() => this.tick(), 1000));
@@ -658,7 +729,7 @@ module.exports = class WorklogTimeline extends Plugin {
       if (this.settings.autoLayout && fresh.length && added.length <= 2) {
         const e = fresh[fresh.length - 1];
         const floor = this.floorFor(canvas, data, e.toNode);
-        if (this.applyMoves(canvas, planLayout(a, e.toNode, e.fromNode, canvas.gridSpacing, floor), true)) {
+        if (this.applyMoves(canvas, planLayout(a, e.toNode, e.fromNode, canvas.gridSpacing, floor), true, e.toNode)) {
           data = canvas.getData();
           a = analyze(data, aliases, stamps);
         }
@@ -719,13 +790,22 @@ module.exports = class WorklogTimeline extends Plugin {
     }
   }
 
-  applyMoves(canvas, moves, merge) {
+  applyMoves(canvas, moves, merge, anchorId) {
     let moved = false;
-    for (const [id, p] of Object.entries(moves)) {
-      const node = canvas.nodes.get(id);
-      if (!node || typeof node.moveAndResize !== "function") continue;
-      node.moveAndResize({ x: p.x, y: p.y, width: node.width, height: node.height });
-      moved = true;
+    const move = (ms) => {
+      for (const [id, p] of Object.entries(ms)) {
+        const node = canvas.nodes.get(id);
+        if (!node || typeof node.moveAndResize !== "function") continue;
+        node.moveAndResize({ x: p.x, y: p.y, width: node.width, height: node.height });
+        moved = true;
+      }
+    };
+    move(moves);
+    if (moved || anchorId) {
+      // Laid-out cards that now run into a band push it (and everything under it) down.
+      const ids = new Set(Object.keys(moves));
+      if (anchorId) ids.add(anchorId);
+      move(planBandPush(canvas.getData().nodes || [], ids, canvas.gridSpacing));
     }
     if (moved) {
       if (merge && typeof canvas.overrideHistory === "function") {
@@ -739,13 +819,49 @@ module.exports = class WorklogTimeline extends Plugin {
     return moved;
   }
 
+  snapFront() {
+    if (this.settings.autoLayout === false) return null;
+    const view = this.activeCanvas();
+    const a = view && this.analysis.get(view);
+    if (!a) return null;
+    const pos = new Map();
+    for (const n of a.active) {
+      const node = view.canvas.nodes.get(n.id);
+      if (node) pos.set(n.id, { x: node.x, y: node.y, w: node.width, h: node.height });
+    }
+    return { view, pos };
+  }
+
+  realignAfterDrag(snap) {
+    const { view, pos } = snap;
+    const canvas = view.canvas;
+    if (!this.canvasViews().includes(view)) return;
+    if (canvas.canvasEl && canvas.canvasEl.classList.contains("is-connecting")) return;
+    const moved = [];
+    for (const [id, p] of pos) {
+      const node = canvas.nodes.get(id);
+      if (!node) continue;
+      const shifted = Math.abs(node.x - p.x) > 0.5 || Math.abs(node.y - p.y) > 0.5;
+      const resized = Math.abs(node.width - p.w) > 0.5 || Math.abs(node.height - p.h) > 0.5;
+      if (resized) return;
+      if (shifted) moved.push(id);
+    }
+    if (moved.length !== 1) return; // a group drag is left as is
+    const data = canvas.getData();
+    const stamps = this.settings.stamps[view.file.path] || {};
+    const a = analyze(data, parseAliases(this.settings.aliases), stamps);
+    const id = moved[0];
+    // Merge into the drag's history step: one ctrl+z undoes the drag and the realign.
+    if (this.applyMoves(canvas, planRealign(a, id, canvas.gridSpacing, this.floorFor(canvas, data, id)), true, id)) this.tick();
+  }
+
   /* Manual layout: the card moves under its parent, the front lines up in a row. */
   layoutNode(canvas, id) {
     const view = this.viewOf(canvas);
     const a = view && this.analysis.get(view);
     const parent = a && (a.parents.get(id) || [])[0];
     if (!parent) { new Notice(t("noParent")); return; }
-    this.applyMoves(canvas, planLayout(a, id, parent, canvas.gridSpacing, this.floorFor(canvas, canvas.getData(), id)));
+    this.applyMoves(canvas, planLayout(a, id, parent, canvas.gridSpacing, this.floorFor(canvas, canvas.getData(), id)), false, id);
     this.tick();
   }
 
