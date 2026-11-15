@@ -324,15 +324,13 @@ function analyze(data, aliases, stamps) {
   for (const c of catalog.values()) {
     c.headers.sort((p, q) => p.y - q.y);
     c.pausedTasks.sort((p, q) => (stamps[q.id] || 0) - (stamps[p.id] || 0) || p.y - q.y);
-    // Latest = newest by creation stamp; without stamps, the lowest open card, else the lowest card.
-    const stamped = c.cards.filter((n) => stamps[n.id] > 0);
+    // Jump target = the work front: active open branches first, then any open card, then any card.
+    // Within that pool, the newest by creation stamp; ties and unstamped cards go to the lowest one.
+    const activeCards = c.cards.filter((n) => activeIds.has(n.id));
     const openCards = c.cards.filter((n) => openIds.has(n.id));
-    const pool = stamped.length ? stamped : (openCards.length ? openCards : c.cards);
-    c.last = pool.reduce((best, n) => {
-      if (!best) return n;
-      if (stamped.length) return stamps[n.id] > stamps[best.id] ? n : best;
-      return n.y > best.y ? n : best;
-    }, null);
+    const pool = activeCards.length ? activeCards : (openCards.length ? openCards : c.cards);
+    const ts = (n) => stamps[n.id] || 0;
+    c.last = pool.reduce((best, n) => (!best || ts(n) > ts(best) || (ts(n) === ts(best) && n.y > best.y) ? n : best), null);
   }
 
   return { byId, parents, children, hdrs, projects, open, active, activeIds, pausedIds, rootIds, marked, perProject, catalog };
