@@ -46,6 +46,9 @@ and the plugin keeps track of where you are.
 - **Projects panel.** A side panel lists projects (in progress, paused, dormant)
   with a smooth jump to each project's work front (its newest open branch) or any of its roots.
   Each project has collapsible lists of its open and paused tasks, with pause and resume buttons.
+- **Checklists.** A card with checkboxes turns green once every `- [ ]` is ticked, and gets its
+  old color back when you untick one. A card you recolor by hand keeps that color until you
+  tick or untick something again.
 - **Archive.** For one-off projects: the 🗄 button in the panel or *Archive project* in the card
   menu. An archived project stays in the list while it has open tasks and hides once they are
   done; the collapsed *Archive* section at the bottom shows it on request.
@@ -63,7 +66,7 @@ Not in the community store yet. Manual install:
 
 ## Tests
 
-The layout logic is covered by tests with no dependencies (Node 18+):
+The layout and checklist logic is covered by tests with no dependencies (Node 18+):
 
 ```
 node --test tests/

@@ -255,6 +255,32 @@ function isDone(n) {
   return firstDone && !unchecked;
 }
 
+/* ---------- checklists ----------
+ * A card with checkboxes turns green when all of them are ticked and loses the green when one
+ * is unticked again. Only a change of the checkboxes recolors a card, so a card you colored by
+ * hand keeps its color until you tick or untick something. */
+const CHECKBOX = /^\s*(?:[-*+]|\d+[.)])\s+\[(.)\]/gm;
+
+/* null: no checkboxes; true: all ticked; false: at least one open. */
+function checklistState(text) {
+  let any = false;
+  for (const m of (text || "").matchAll(CHECKBOX)) {
+    any = true;
+    if (m[1] === " ") return false;
+  }
+  return any ? true : null;
+}
+
+/* The color a card should get after its checklist went from `prev` to `now`, or undefined
+ * to leave it. `prev` is undefined the first time a card is seen: an already complete list
+ * turns green then. `before` is the color the card had before it turned green. */
+function checklistColor(prev, now, color, before) {
+  const green = String(color) === "4";
+  if (now === true && prev !== true && !green) return "4";
+  if (now === false && prev === true && green) return before || "";
+  return undefined;
+}
+
 /* ---------- projects ----------
  * A card's project is the nearest "header" above it along the arrows.
  * A header is a root (no incoming arrows, has outgoing ones) or a one-line card whose text
@@ -648,6 +674,7 @@ module.exports = class WorklogTimeline extends Plugin {
     this.analysis = new WeakMap(); // view -> analyze() result
     this.seenEdges = new WeakMap(); // view -> Set(edge id)
     this.emptySince = new WeakMap(); // view -> time it was first seen empty
+    this.checklists = new WeakMap(); // view -> Map(id -> {state, before})
     this.lastView = null;
     this.panelKey = "";
 
@@ -816,6 +843,7 @@ module.exports = class WorklogTimeline extends Plugin {
     if (freshCards.length && freshCards.length <= 3 && this.autoBand(canvas, data, freshCards, lastWork, now)) {
       data = canvas.getData();
     }
+    if (this.syncChecklists(canvas, view, data)) data = canvas.getData();
     const aliases = parseAliases(this.settings.aliases);
     let a = analyze(data, aliases, stamps);
 
@@ -897,6 +925,36 @@ module.exports = class WorklogTimeline extends Plugin {
         }
       } else if (chip) chip.remove();
     }
+  }
+
+  /* All checkboxes ticked → green; one unticked again → the color it had before. A card being
+   * edited waits until editing ends, so typing "- [x]" doesn't recolor it mid-word. */
+  syncChecklists(canvas, view, data) {
+    if (!this.checklists.has(view)) this.checklists.set(view, new Map());
+    const seen = this.checklists.get(view);
+    let changed = false;
+    for (const n of data.nodes || []) {
+      if (n.type !== "text" || isBand(n)) continue;
+      const node = canvas.nodes.get(n.id);
+      if (!node || node.isEditing) continue;
+      const now = checklistState(n.text);
+      const prev = seen.get(n.id);
+      if (now === null) { if (prev) seen.delete(n.id); continue; }
+      const color = checklistColor(prev && prev.state, now, n.color, prev && prev.before);
+      // Remember the color under the green; a card that was already green has none to go back to.
+      const before = now !== true ? undefined
+        : prev && prev.state === true ? prev.before
+        : String(n.color) === "4" ? undefined : n.color;
+      seen.set(n.id, { state: now, before });
+      if (color === undefined || typeof node.setData !== "function") continue;
+      const d = Object.assign({}, node.getData());
+      if (color) d.color = color; else delete d.color;
+      node.setData(d);
+      changed = true;
+    }
+    // One history step for the recolor, so ctrl+z can take the green back.
+    if (changed && typeof canvas.requestSave === "function") canvas.requestSave();
+    return changed;
   }
 
   applyMoves(canvas, moves, merge, anchorId) {
@@ -1536,5 +1594,5 @@ class WorklogSettings extends PluginSettingTab {
 /* Pure functions, for tests (tests/*.test.js). Obsidian only uses the class itself. */
 module.exports.core = {
   analyze, isDone, parseRoot, cleanName, planLayout, planRealign, planBandPush, bandFloor,
-  isNewChild, arrowHits, findSlot,
+  isNewChild, arrowHits, findSlot, checklistState, checklistColor,
 };
