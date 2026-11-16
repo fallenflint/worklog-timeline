@@ -12,7 +12,7 @@ Module._load = function (request, ...rest) {
   return realLoad.call(this, request, ...rest);
 };
 globalThis.window = { localStorage: { getItem: () => null } };
-const { checklistState, checklistDone, doneMark, setDoneMark, isDone } = require("../main.js").core;
+const { checklistState, doneMark, setDoneMark, tickAll, isDone } = require("../main.js").core;
 
 test("checklist state", () => {
   assert.equal(checklistState("plain text"), null);
@@ -22,18 +22,28 @@ test("checklist state", () => {
   assert.equal(checklistState("text with [ ] inside a line"), null);
 });
 
-test("done = ✅ or ❌ at the start of the first line; color means nothing for text", () => {
+test("a card without checkboxes is done by ✅ at the start", () => {
   assert.equal(isDone({ type: "text", text: "✅ ship it" }), true);
-  assert.equal(isDone({ type: "text", text: "\n❌ dropped" }), true);
   assert.equal(isDone({ type: "text", text: "⏸ ✅ x" }), true);
   assert.equal(isDone({ type: "text", text: "## ✅ Title" }), true);
-  assert.equal(isDone({ type: "text", text: "✅\n- [x] a" }), true);
-  assert.equal(isDone({ type: "text", text: "- [x] ✅ a\n- [ ] b" }), true);
-  assert.equal(isDone({ type: "text", text: "- [x] a ✅" }), false);
-  assert.equal(isDone({ type: "text", text: "green but open", color: "4" }), false);
-  assert.equal(isDone({ type: "text", text: "- [x] a\n- [x] b" }), false);
   assert.equal(isDone({ type: "text", text: "ship ✅ later" }), false);
-  assert.equal(isDone({ type: "file", file: "a.md", color: "4" }), true, "files have no text: green still counts");
+  assert.equal(isDone({ type: "text", text: "green but open", color: "4" }), false);
+});
+
+test("a card with checkboxes is done when all are ticked, ✅ or not", () => {
+  assert.equal(isDone({ type: "text", text: "- [x] a\n- [x] b" }), true);
+  assert.equal(isDone({ type: "text", text: "Fixes:\n- [x] a\n- [X] b" }), true);
+  assert.equal(isDone({ type: "text", text: "- [x] a\n- [ ] b" }), false);
+  assert.equal(isDone({ type: "text", text: "✅ Fixes:\n- [x] a\n- [ ] b" }), false, "an open box beats ✅");
+});
+
+test("❌ cancels any card, checklist or not", () => {
+  assert.equal(isDone({ type: "text", text: "\n❌ dropped" }), true);
+  assert.equal(isDone({ type: "text", text: "❌ Fixes:\n- [ ] a" }), true);
+});
+
+test("file and link cards: green still means done", () => {
+  assert.equal(isDone({ type: "file", file: "a.md", color: "4" }), true);
   assert.equal(isDone({ type: "file", file: "a.md" }), false);
 });
 
@@ -43,31 +53,14 @@ test("setDoneMark puts ✅ on and takes it off", () => {
   assert.equal(setDoneMark("❌ task", true), "❌ task");
   assert.equal(setDoneMark("⏸ task", true), "⏸ ✅ task");
   assert.equal(setDoneMark("# Title\nbody", true), "# ✅ Title\nbody");
-  assert.equal(setDoneMark("- [x] a\n- [x] b", true), "- [x] ✅ a\n- [x] b", "a list stays a list");
-  assert.equal(setDoneMark("1. [x] a", true), "1. [x] ✅ a");
-  assert.equal(setDoneMark("✅\n- [x] a", false), "- [x] a", "the old own-line mark comes off too");
-  for (const s of ["task", "⏸ task", "# Title\nbody", "- [x] a\n- [x] b", "> quote", "line one\nline two"]) {
+  assert.equal(setDoneMark("- [x] ✅ a", false), "- [x] a");
+  assert.equal(setDoneMark("✅\n- [x] a", false), "- [x] a");
+  for (const s of ["task", "⏸ task", "# Title\nbody", "> quote", "line one\nline two"]) {
     assert.equal(setDoneMark(setDoneMark(s, true), false), s, "round trip: " + s);
   }
   assert.equal(setDoneMark("❌ task", false), "❌ task");
 });
 
-test("ticking the last box adds ✅, unticking takes it off", () => {
-  assert.equal(checklistDone(false, true, null), true);
-  assert.equal(checklistDone(true, false, "✅"), false);
-});
-
-test("no change without a transition, and ❌ is never touched", () => {
-  assert.equal(checklistDone(true, true, "✅"), undefined, "still complete");
-  assert.equal(checklistDone(false, false, null), undefined, "still open");
-  assert.equal(checklistDone(undefined, false, "✅"), undefined, "a ✅ card with open boxes, first seen, stays done");
-  assert.equal(checklistDone(true, false, null), undefined, "✅ removed by hand: left alone");
-  assert.equal(checklistDone(true, true, null), undefined, "✅ removed by hand while complete: left alone");
-  assert.equal(checklistDone(true, false, "❌"), undefined, "cancelled stays cancelled");
-  assert.equal(checklistDone(false, true, "❌"), undefined);
-});
-
-test("a complete list seen for the first time gets ✅", () => {
-  assert.equal(checklistDone(undefined, true, null), true);
-  assert.equal(checklistDone(undefined, true, "✅"), undefined);
+test("tickAll ticks every open box", () => {
+  assert.equal(tickAll("Fixes:\n- [ ] a\n  - [x] b\n1. [ ] c"), "Fixes:\n- [x] a\n  - [x] b\n1. [x] c");
 });

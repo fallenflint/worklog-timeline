@@ -243,10 +243,11 @@ function bandGeometry(real) {
 }
 
 /* ---------- done / open ----------
- * A text card is done when its first line starts with ✅ (done) or ❌ (cancelled). A ⏸, a
- * heading #, a list item with or without a checkbox, or a quote in front of the mark is fine:
- * "- [x] ✅ task" is done and stays a list. Color means nothing for text cards. File and link
- * cards can't carry a mark, so for them green (color 4) still means done. */
+ * A text card is cancelled when its first line starts with ❌. Otherwise a card with checkboxes
+ * is done when all of them are ticked, and a card without them is done when its first line
+ * starts with ✅. A ⏸, a heading #, a list marker or a quote in front of the mark is fine.
+ * Color means nothing for text cards. File and link cards can't carry a mark, so for them
+ * green (color 4) still means done. */
 const MARK_PREFIX = String.raw`(?:⏸️?\s*)?(?:#+\s*|(?:[-*+]|\d+[.)])\s+(?:\[.\]\s+)?|>\s*)?`;
 const MARK_AT = new RegExp("^" + MARK_PREFIX + "(✅|❌)");
 
@@ -258,12 +259,14 @@ function doneMark(text) {
 
 function isDone(n) {
   if (n.type && n.type !== "text") return String(n.color) === "4";
-  return !!doneMark(n.text);
+  const mark = doneMark(n.text);
+  if (mark === "❌") return true;
+  const boxes = checklistState(n.text);
+  return boxes === null ? mark === "✅" : boxes;
 }
 
 /* Put ✅ on a card's text or take it off. The mark goes right after any ⏸, heading #, list
- * marker or checkbox of the first line, so a checklist stays a checklist: "- [x] ✅ task".
- * ❌ is never added or removed here. */
+ * marker or checkbox of the first line. ❌ is never added or removed here. */
 const MARK_OWN_LINE = /^(\s*(?:⏸️?\s*)?)✅️?[ \t]*\n/;
 const MARK_INLINE = new RegExp("^(\\s*" + MARK_PREFIX + ")✅\\uFE0F?[ \\t]*");
 
@@ -277,10 +280,7 @@ function setDoneMark(text, on) {
   return lead + pre + "✅ " + body.slice(pre.length);
 }
 
-/* ---------- checklists ----------
- * A card with checkboxes gets ✅ when all of them are ticked and loses it when one is unticked
- * again. Only a change of the checkboxes touches the mark, so a ✅ you added or removed by hand
- * stays until you tick or untick something. */
+/* ---------- checklists ---------- */
 const CHECKBOX = /^\s*(?:[-*+]|\d+[.)])\s+\[(.)\]/gm;
 
 /* null: no checkboxes; true: all ticked; false: at least one open. */
@@ -293,14 +293,8 @@ function checklistState(text) {
   return any ? true : null;
 }
 
-/* true: put ✅ on, false: take it off, undefined: leave the card alone, after its checklist
- * went from `prev` to `now`. `prev` is undefined the first time a card is seen: an already
- * complete list gets ✅ then. `mark` is the card's current doneMark(). */
-function checklistDone(prev, now, mark) {
-  if (now === true && prev !== true && !mark) return true;
-  if (now === false && prev === true && mark === "✅") return false;
-  return undefined;
-}
+/* Tick every open checkbox. */
+const tickAll = (text) => (text || "").replace(/^(\s*(?:[-*+]|\d+[.)])\s+\[) \]/gm, "$1x]");
 
 /* ---------- projects ----------
  * A card's project is the nearest "header" above it along the arrows.
@@ -702,7 +696,6 @@ module.exports = class WorklogTimeline extends Plugin {
     this.analysis = new WeakMap(); // view -> analyze() result
     this.seenEdges = new WeakMap(); // view -> Set(edge id)
     this.emptySince = new WeakMap(); // view -> time it was first seen empty
-    this.checklists = new WeakMap(); // view -> Map(id -> checklistState)
     this.lastView = null;
     this.panelKey = "";
 
@@ -871,7 +864,6 @@ module.exports = class WorklogTimeline extends Plugin {
     if (freshCards.length && freshCards.length <= 3 && this.autoBand(canvas, data, freshCards, lastWork, now)) {
       data = canvas.getData();
     }
-    if (this.syncChecklists(canvas, view, data)) data = canvas.getData();
     const aliases = parseAliases(this.settings.aliases);
     let a = analyze(data, aliases, stamps);
 
@@ -953,32 +945,6 @@ module.exports = class WorklogTimeline extends Plugin {
         }
       } else if (chip) chip.remove();
     }
-  }
-
-  /* All checkboxes ticked → ✅; one unticked again → the ✅ comes off. A card being edited
-   * waits until editing ends, so typing "- [x]" doesn't change it mid-word. */
-  syncChecklists(canvas, view, data) {
-    if (!this.checklists.has(view)) this.checklists.set(view, new Map());
-    const seen = this.checklists.get(view);
-    let changed = false;
-    for (const n of data.nodes || []) {
-      if (n.type !== "text" || isBand(n)) continue;
-      const node = canvas.nodes.get(n.id);
-      if (!node || node.isEditing) continue;
-      const now = checklistState(n.text);
-      const prev = seen.get(n.id);
-      if (now === null) { if (prev !== undefined) seen.delete(n.id); continue; }
-      seen.set(n.id, now);
-      const on = checklistDone(prev, now, doneMark(n.text));
-      if (on === undefined || typeof node.setData !== "function") continue;
-      const d = Object.assign({}, node.getData());
-      d.text = setDoneMark(d.text, on);
-      node.setData(d);
-      changed = true;
-    }
-    // One history step for the change, so ctrl+z can take the ✅ back.
-    if (changed && typeof canvas.requestSave === "function") canvas.requestSave();
-    return changed;
   }
 
   applyMoves(canvas, moves, merge, anchorId) {
@@ -1226,7 +1192,8 @@ module.exports = class WorklogTimeline extends Plugin {
 
     menu.addItem((item) => item.setTitle(t("menuDone") + many).setIcon("check-circle")
       .onClick(() => this.updateNodes(canvas, targets, (d) => {
-        if (d.type === "text") d.text = setDoneMark(d.text, true);
+        // A checklist is done by its boxes, so Done ticks them; any other card gets ✅.
+        if (d.type === "text") d.text = checklistState(d.text) === null ? setDoneMark(d.text, true) : tickAll(d.text);
         else d.color = "4";
         return d;
       })));
@@ -1623,5 +1590,5 @@ class WorklogSettings extends PluginSettingTab {
 /* Pure functions, for tests (tests/*.test.js). Obsidian only uses the class itself. */
 module.exports.core = {
   analyze, isDone, parseRoot, cleanName, planLayout, planRealign, planBandPush, bandFloor,
-  isNewChild, arrowHits, findSlot, checklistState, checklistDone, doneMark, setDoneMark,
+  isNewChild, arrowHits, findSlot, checklistState, doneMark, setDoneMark, tickAll,
 };

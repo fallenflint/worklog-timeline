@@ -8,7 +8,7 @@ and the plugin keeps track of where you are.
 ![Two projects on a canvas with date bands, color stripes and the projects panel](assets/overview.png)
 
 - The top card is a project. All of its descendants get its color.
-- Any card can be marked done or cancelled: ✅ or ❌ at the start of its text.
+- Any card can be marked done or cancelled: ✅ or ❌ at the start of its text, or all checkboxes ticked.
 - Every card has a creation date.
 - Leaves are your current work. There can be any number of them, but 5 is the comfortable
   limit of parallel tasks for most people.
@@ -46,15 +46,15 @@ and the plugin keeps track of where you are.
 - **Projects panel.** A side panel lists projects (in progress, paused, dormant), freshest first,
   with a smooth jump to each project's work front (its newest open branch) or any of its roots.
   Each project has collapsible lists of its open and paused tasks, with pause and resume buttons.
-- **Checklists.** A card with checkboxes gets a ✅ on top once every `- [ ]` is ticked, and
-  loses it when you untick one. A ✅ you add or remove by hand stays until you tick or untick
-  something again.
+- **Checklists.** A card with checkboxes is done once every `- [ ]` is ticked; no ✅ needed.
+  *Done ✅* in the card menu ticks them all.
 - **Archive.** For one-off projects: the 🗄 button in the panel or *Archive project* in the card
   menu. An archived project stays in the list while it has open tasks and hides once they are
   done; the collapsed *Archive* section at the bottom shows it on request.
 
-A card counts as done when its first line starts with ✅ (done) or ❌ (cancelled); a `⏸` or a
-heading `#` before the mark is fine. Color doesn't matter. File and link cards have no text,
+A card is cancelled when its first line starts with ❌. Otherwise a card with checkboxes is done
+when all of them are ticked, and a card without them is done when its first line starts with ✅;
+a `⏸` or a heading `#` before the mark is fine. Color doesn't matter. File and link cards have no text,
 so for them green (color 4) still means done.
 
 ## Installation
