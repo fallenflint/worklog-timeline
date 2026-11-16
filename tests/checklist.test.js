@@ -28,6 +28,8 @@ test("done = ✅ or ❌ at the start of the first line; color means nothing for 
   assert.equal(isDone({ type: "text", text: "⏸ ✅ x" }), true);
   assert.equal(isDone({ type: "text", text: "## ✅ Title" }), true);
   assert.equal(isDone({ type: "text", text: "✅\n- [x] a" }), true);
+  assert.equal(isDone({ type: "text", text: "- [x] ✅ a\n- [ ] b" }), true);
+  assert.equal(isDone({ type: "text", text: "- [x] a ✅" }), false);
   assert.equal(isDone({ type: "text", text: "green but open", color: "4" }), false);
   assert.equal(isDone({ type: "text", text: "- [x] a\n- [x] b" }), false);
   assert.equal(isDone({ type: "text", text: "ship ✅ later" }), false);
@@ -41,8 +43,10 @@ test("setDoneMark puts ✅ on and takes it off", () => {
   assert.equal(setDoneMark("❌ task", true), "❌ task");
   assert.equal(setDoneMark("⏸ task", true), "⏸ ✅ task");
   assert.equal(setDoneMark("# Title\nbody", true), "# ✅ Title\nbody");
-  assert.equal(setDoneMark("- [x] a\n- [x] b", true), "✅\n- [x] a\n- [x] b", "a list stays a list");
-  for (const s of ["task", "⏸ task", "# Title\nbody", "- [x] a\n- [x] b", "line one\nline two"]) {
+  assert.equal(setDoneMark("- [x] a\n- [x] b", true), "- [x] ✅ a\n- [x] b", "a list stays a list");
+  assert.equal(setDoneMark("1. [x] a", true), "1. [x] ✅ a");
+  assert.equal(setDoneMark("✅\n- [x] a", false), "- [x] a", "the old own-line mark comes off too");
+  for (const s of ["task", "⏸ task", "# Title\nbody", "- [x] a\n- [x] b", "> quote", "line one\nline two"]) {
     assert.equal(setDoneMark(setDoneMark(s, true), false), s, "round trip: " + s);
   }
   assert.equal(setDoneMark("❌ task", false), "❌ task");

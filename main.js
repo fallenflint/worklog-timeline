@@ -243,12 +243,16 @@ function bandGeometry(real) {
 }
 
 /* ---------- done / open ----------
- * A text card is done when its first line starts with ✅ (done) or ❌ (cancelled); a ⏸ or a
- * heading # in front of the mark is fine. Color means nothing for text cards. File and link
+ * A text card is done when its first line starts with ✅ (done) or ❌ (cancelled). A ⏸, a
+ * heading #, a list item with or without a checkbox, or a quote in front of the mark is fine:
+ * "- [x] ✅ task" is done and stays a list. Color means nothing for text cards. File and link
  * cards can't carry a mark, so for them green (color 4) still means done. */
+const MARK_PREFIX = String.raw`(?:⏸️?\s*)?(?:#+\s*|(?:[-*+]|\d+[.)])\s+(?:\[.\]\s+)?|>\s*)?`;
+const MARK_AT = new RegExp("^" + MARK_PREFIX + "(✅|❌)");
+
 function doneMark(text) {
   const first = ((text || "").split("\n").map((s) => s.trim()).find(Boolean)) || "";
-  const m = /^(?:⏸️?\s*)?(?:#+\s*)?(✅|❌)/.exec(first);
+  const m = MARK_AT.exec(first);
   return m ? m[1] : null;
 }
 
@@ -257,18 +261,20 @@ function isDone(n) {
   return !!doneMark(n.text);
 }
 
-/* Put ✅ on a card's text or take it off. When the first line is a list item or a quote, the
- * mark goes on a line of its own, so the list stays a list. ❌ is never added or removed here. */
+/* Put ✅ on a card's text or take it off. The mark goes right after any ⏸, heading #, list
+ * marker or checkbox of the first line, so a checklist stays a checklist: "- [x] ✅ task".
+ * ❌ is never added or removed here. */
+const MARK_OWN_LINE = /^(\s*(?:⏸️?\s*)?)✅️?[ \t]*\n/;
+const MARK_INLINE = new RegExp("^(\\s*" + MARK_PREFIX + ")✅\\uFE0F?[ \\t]*");
+
 function setDoneMark(text, on) {
   text = text || "";
-  if (!on) return text.replace(/^(\s*(?:⏸️?\s*)?(?:#+\s*)?)✅️?[ \t]*\n?/, "$1");
+  if (!on) return MARK_OWN_LINE.test(text) ? text.replace(MARK_OWN_LINE, "$1") : text.replace(MARK_INLINE, "$1");
   if (doneMark(text)) return text;
   const lead = /^\s*/.exec(text)[0];
   const body = text.slice(lead.length);
-  const m = /^(⏸️?\s*)?(#+\s+)?/.exec(body);
-  const rest = body.slice(m[0].length);
-  const block = !m[2] && /^(?:[-*+]\s|\d+[.)]\s|>)/.test(rest);
-  return lead + m[0] + (block ? "✅\n" : "✅ ") + rest;
+  const pre = new RegExp("^" + MARK_PREFIX).exec(body)[0];
+  return lead + pre + "✅ " + body.slice(pre.length);
 }
 
 /* ---------- checklists ----------
