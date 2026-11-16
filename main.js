@@ -296,6 +296,21 @@ function checklistState(text) {
 /* Tick every open checkbox. */
 const tickAll = (text) => (text || "").replace(/^(\s*(?:[-*+]|\d+[.)])\s+\[) \]/gm, "$1x]");
 
+/* The plugin's own green: one step off Obsidian's palette green, so it is never the user's. */
+const AUTO_GREEN = "#08b94f";
+
+/* New color for a text card so its green follows its done state, or undefined to leave it.
+ * Only uncolored cards and our own shade are touched; cancelled cards are not painted. */
+function doneColor(n) {
+  if (n.type && n.type !== "text") return undefined;
+  const ours = String(n.color || "").toLowerCase() === AUTO_GREEN;
+  if (n.color && !ours) return undefined;
+  const want = isDone(n) && doneMark(n.text) !== "❌";
+  if (want && !n.color) return AUTO_GREEN;
+  if (!want && ours) return "";
+  return undefined;
+}
+
 /* ---------- projects ----------
  * A card's project is the nearest "header" above it along the arrows.
  * A header is a root (no incoming arrows, has outgoing ones) or a one-line card whose text
@@ -864,6 +879,7 @@ module.exports = class WorklogTimeline extends Plugin {
     if (freshCards.length && freshCards.length <= 3 && this.autoBand(canvas, data, freshCards, lastWork, now)) {
       data = canvas.getData();
     }
+    if (this.syncDoneColors(canvas, data)) data = canvas.getData();
     const aliases = parseAliases(this.settings.aliases);
     let a = analyze(data, aliases, stamps);
 
@@ -945,6 +961,25 @@ module.exports = class WorklogTimeline extends Plugin {
         }
       } else if (chip) chip.remove();
     }
+  }
+
+  /* Paint done text cards our green and take it off reopened ones. Cards being edited wait. */
+  syncDoneColors(canvas, data) {
+    let changed = false;
+    for (const d of data.nodes || []) {
+      if (d.type !== "text" || isBand(d)) continue;
+      const color = doneColor(d);
+      if (color === undefined) continue;
+      const node = canvas.nodes && canvas.nodes.get(d.id);
+      if (!node || node.isEditing || !node.getData || !node.setData) continue;
+      const nd = Object.assign({}, node.getData());
+      if (color) nd.color = color;
+      else delete nd.color;
+      node.setData(nd);
+      changed = true;
+    }
+    if (changed) canvas.requestSave && canvas.requestSave();
+    return changed;
   }
 
   applyMoves(canvas, moves, merge, anchorId) {
@@ -1590,5 +1625,5 @@ class WorklogSettings extends PluginSettingTab {
 /* Pure functions, for tests (tests/*.test.js). Obsidian only uses the class itself. */
 module.exports.core = {
   analyze, isDone, parseRoot, cleanName, planLayout, planRealign, planBandPush, bandFloor,
-  isNewChild, arrowHits, findSlot, checklistState, doneMark, setDoneMark, tickAll,
+  isNewChild, arrowHits, findSlot, checklistState, doneMark, setDoneMark, tickAll, doneColor, AUTO_GREEN,
 };

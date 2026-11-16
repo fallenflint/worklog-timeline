@@ -54,8 +54,10 @@ and the plugin keeps track of where you are.
 
 A card is cancelled when its first line starts with ❌. Otherwise a card with checkboxes is done
 when all of them are ticked, and a card without them is done when its first line starts with ✅;
-a `⏸` or a heading `#` before the mark is fine. Color doesn't matter. File and link cards have no text,
-so for them green (color 4) still means done.
+a `⏸` or a heading `#` before the mark is fine. Color doesn't decide anything: the plugin paints a done
+uncolored card its own green (`#08b94f`, one step off the palette green) and takes it off when the card
+reopens; any color you set yourself, palette green included, stays as is. Cancelled cards are not painted.
+File and link cards have no text, so for them green (color 4) still means done.
 
 ## Installation
 
