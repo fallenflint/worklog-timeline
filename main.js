@@ -3,7 +3,7 @@
  * No build step: plain CommonJS. Parts of the Canvas API are undocumented, so every call
  * into it is guarded. */
 const obsidian = require("obsidian");
-const { Plugin, Notice, PluginSettingTab, Setting, ItemView, Modal } = obsidian;
+const { Plugin, Notice, PluginSettingTab, Setting, ItemView, Modal, setIcon } = obsidian;
 
 /* ---------- i18n ----------
  * English is the base. Add a language by adding a table with the same keys;
@@ -46,6 +46,13 @@ const STRINGS = {
     secWorking: "In progress",
     secPaused: "Paused",
     secSleeping: "Dormant",
+    secArchived: "Archive",
+    menuArchive: "Archive project “{name}”",
+    menuUnarchive: "Unarchive “{name}”",
+    btnArchive: "Archive: hide from the panel once it has no open tasks",
+    btnUnarchive: "Unarchive",
+    archived: "“{name}” goes to the archive once it has no open tasks",
+    unarchived: "“{name}” is back in the list",
     toLast: "Go to the latest card",
     btnResume: "Resume",
     btnPause: "Pause",
@@ -109,6 +116,13 @@ const STRINGS = {
     secWorking: "В работе",
     secPaused: "Отложены",
     secSleeping: "Спят",
+    secArchived: "Архив",
+    menuArchive: "В архив: «{name}»",
+    menuUnarchive: "Достать из архива «{name}»",
+    btnArchive: "В архив: прятать из панели, когда нет открытых задач",
+    btnUnarchive: "Достать из архива",
+    archived: "«{name}» уйдёт в архив, когда закроются все задачи",
+    unarchived: "«{name}» снова в списке",
     toLast: "К последней карточке проекта",
     btnResume: "Вернуть в работу",
     btnPause: "Отложить",
@@ -159,6 +173,7 @@ const PANEL_TYPE = "worklog-projects";
 const DEFAULTS = {
   limit: 5, showAllStamps: false, projects: true, aliases: "", autoLayout: true,
   autoBand: "break", breakHours: 6, dayStart: 4, stamps: {},
+  archived: {}, // canvas path -> [root card ids] of archived projects
 };
 const BAND_H = 60;
 
@@ -412,10 +427,104 @@ function analyze(data, aliases, stamps) {
 }
 
 /* ---------- auto-layout ----------
- * A new card goes under its parent: centered when it is the only child, centered in a row with
- * its siblings when they are all leaves, otherwise to the right of the rightmost sibling.
+ * Invariants (tests/layout.test.js checks them):
+ * 1. Only the front moves: active branch ends and the new card. Done history, inner cards,
+ *    roots, paused cards and other projects' cards are obstacles and never move.
+ * 2. A card that moves never lands on an obstacle.
+ * 3. The new card's arrow from its parent doesn't run through an obstacle, so it can't look
+ *    attached to someone else's card. If its column under the parent is taken, the card goes
+ *    to the nearest free spot beside it (either side) instead of pushing anything away.
+ * The gap matches the built-in "Arrange" commands (canvas grid spacing). */
+
+const hitBox = (x, y, w, h, o, pad) =>
+  x < o.x + o.width + pad && x + w + pad > o.x && y < o.y + o.height + pad && y + h + pad > o.y;
+
+/* Obsidian draws a bottom→top arrow as a cubic curve with vertical tangents. Sample it and
+ * report whether it passes through any obstacle. */
+function arrowHits(from, to, obstacles, pad) {
+  const x0 = from.x + from.width / 2, y0 = from.y + from.height;
+  const x3 = to.x + to.width / 2, y3 = to.y;
+  const k = Math.max(Math.abs(y3 - y0) / 2, 30);
+  const y1 = y0 + k, y2 = y3 - k;
+  for (let i = 1; i < 32; i++) {
+    const t = i / 32, u = 1 - t;
+    const x = u * u * u * x0 + 3 * u * u * t * x0 + 3 * u * t * t * x3 + t * t * t * x3;
+    const y = u * u * u * y0 + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t * y3;
+    for (const o of obstacles) {
+      if (x > o.x - pad && x < o.x + o.width + pad && y > o.y - pad && y < o.y + o.height + pad) return true;
+    }
+  }
+  return false;
+}
+
+/* The first obstacle a box at (x, y) runs into, or null. Cards keep at least half a gap apart. */
+function blocker(x, y, w, h, obstacles, gap) {
+  for (const o of obstacles) if (hitBox(x, y, w, h, o, gap / 2 - 0.5)) return o;
+  return null;
+}
+
+/* Nearest free x for a w×h block at height y, starting from x0. Candidates are x0 and the
+ * spots right beside each obstacle; the closest one that is free and whose arrows are clear
+ * wins (ties go right). If no spot has clear arrows, the closest free one. */
+function findSlot(x0, y, w, h, obstacles, gap, arrowsOk) {
+  const cands = [x0];
+  for (const o of obstacles) cands.push(o.x + o.width + gap, o.x - gap - w);
+  cands.sort((p, q) => Math.abs(p - x0) - Math.abs(q - x0) || q - p);
+  let free = null;
+  for (const x of cands) {
+    if (blocker(x, y, w, h, obstacles, gap)) continue;
+    if (!arrowsOk || arrowsOk(x)) return Math.round(x);
+    if (free == null) free = x;
+  }
+  return Math.round(free == null ? x0 : free);
+}
+
+/* Slide a card along its row (dir +1 right, -1 left) until it clears every obstacle. */
+function slide(x, y, w, h, dir, obstacles, gap) {
+  for (let i = 0; i < 500; i++) {
+    const o = blocker(x, y, w, h, obstacles, gap);
+    if (!o) break;
+    x = dir > 0 ? o.x + o.width + gap : o.x - gap - w;
+  }
+  return Math.round(x);
+}
+
+/* Shared by layout and realign: the row of anchors sits at [L, R]; the other front cards go to
+ * the row height and are pushed outward off the anchors and off every obstacle. */
+function lineUpMates(mates, at, set, L, R, rowY, obstacles, gap) {
+  const mid = (L + R) / 2;
+  const right = mates.filter((n) => at(n).x + n.width / 2 >= mid).sort((p, q) => at(p).x - at(q).x);
+  const left = mates.filter((n) => at(n).x + n.width / 2 < mid).sort((p, q) => at(q).x - at(p).x);
+  let cur = R + gap;
+  for (const n of right) {
+    const x = slide(Math.max(at(n).x, cur), rowY, n.width, n.height, 1, obstacles, gap);
+    set(n, { x, y: rowY });
+    cur = x + n.width + gap;
+  }
+  cur = L - gap;
+  for (const n of left) {
+    const x = slide(Math.min(at(n).x, cur - n.width), rowY, n.width, n.height, -1, obstacles, gap);
+    set(n, { x, y: rowY });
+    cur = x - gap;
+  }
+}
+
+function collectMoves(a, pos) {
+  const moves = {};
+  for (const [id, p] of pos) {
+    const n = a.byId.get(id);
+    if (Math.abs(n.x - p.x) > 0.5 || Math.abs(n.y - p.y) > 0.5) moves[id] = p;
+  }
+  return moves;
+}
+
+/* The front = active branch ends (lone project cards with no parent aren't branches). */
+const frontOf = (a) => a.active.filter((n) => (a.parents.get(n.id) || []).length);
+
+/* A new card goes under its parent: centered when it is the only child, centered in a row with
+ * its siblings when they are all open branches, otherwise to the right of the rightmost
+ * sibling. If that spot is taken or its arrow would cross a card, the nearest free spot.
  * Then every active branch lines up in that row, and row neighbors are pushed aside.
- * The gap matches the built-in "Arrange" commands (canvas grid spacing).
  * Returns {id: {x, y}} for the cards that move. */
 function planLayout(a, childId, parentId, gap, minY) {
   const GAP = gap || 20;
@@ -426,88 +535,83 @@ function planLayout(a, childId, parentId, gap, minY) {
   const at = (n) => pos.get(n.id) || { x: n.x, y: n.y };
   const set = (n, p) => pos.set(n.id, Object.assign({}, at(n), p));
 
-  const pcx = parent.x + parent.width / 2;
-
+  const front = frontOf(a);
+  const frontIds = new Set(front.map((n) => n.id));
   const sibs = (a.children.get(parentId) || []).map((id) => a.byId.get(id)).filter(Boolean);
-  const leafRow = sibs.length > 1 && sibs.every((n) => !a.children.has(n.id));
-  const anchors = new Set([childId]);
-  if (leafRow) for (const n of sibs) anchors.add(n.id);
-
-  // The front = active branch ends (lone project cards with no parent aren't branches).
-  // It sits under the parent, or lower if other branch ends already are lower:
-  // front cards only ever move down, never up onto their own ancestors.
-  const front = a.active.filter((n) => (a.parents.get(n.id) || []).length);
+  const others = sibs.filter((n) => n.id !== childId);
+  // Siblings line up with the new card only if they are all open branches themselves.
+  const leafRow = others.length > 0 && others.every((n) => frontIds.has(n.id));
+  const row = leafRow ? others.slice().sort((p, q) => p.x - q.x).concat([child]) : [child];
+  const anchors = new Set(row.map((n) => n.id));
   const mates = front.filter((n) => !anchors.has(n.id));
+  const movable = new Set([...frontIds, ...anchors]);
+  const obstacles = [...a.byId.values()].filter((n) => !movable.has(n.id));
+
+  // The row sits under the parent, or lower if other branch ends already are lower:
+  // front cards only ever move down, never up onto their own ancestors.
   const frontY = Math.round(Math.max(parent.y + parent.height + GAP, minY == null ? -Infinity : minY,
     ...mates.map((n) => n.y)));
-  if (sibs.length <= 1) {
-    set(child, { x: Math.round(pcx - child.width / 2) });
-  } else if (leafRow) {
-    const row = sibs.filter((n) => n.id !== childId).sort((p, q) => p.x - q.x).concat([child]);
-    const total = row.reduce((s, n) => s + n.width, 0) + GAP * (row.length - 1);
-    let x = pcx - total / 2;
-    for (const n of row) { set(n, { x: Math.round(x) }); x += n.width + GAP; }
-  } else {
-    const right = Math.max(...sibs.filter((n) => n.id !== childId).map((n) => n.x + n.width));
-    set(child, { x: Math.round(right + GAP) });
-  }
 
-  for (const n of front) set(n, { y: frontY });
-  set(child, { y: frontY });
+  const total = row.reduce((s, n) => s + n.width, 0) + GAP * (row.length - 1);
+  const h = Math.max(...row.map((n) => n.height));
+  const pcx = parent.x + parent.width / 2;
+  const x0 = others.length && !leafRow
+    ? Math.max(...others.map((n) => n.x + n.width)) + GAP
+    : pcx - total / 2;
+  const xsFrom = (L) => { const xs = []; let x = L; for (const n of row) { xs.push(x); x += n.width + GAP; } return xs; };
+  // The new card's own arrow must stay clear; the parent itself is not in its way.
+  const clear = obstacles.filter((n) => n.id !== parentId);
+  const arrowsOk = (L) => {
+    const xs = xsFrom(L);
+    return row.every((n, i) => !arrowHits(parent, { x: xs[i], y: frontY, width: n.width, height: n.height }, clear, GAP / 2));
+  };
+  const L = findSlot(x0, frontY, total, h, obstacles, GAP, arrowsOk);
+  xsFrom(L).forEach((x, i) => set(row[i], { x: Math.round(x), y: frontY }));
 
-  // The new card (and its leaf siblings) stay under the parent; push row neighbors outward.
-  const anchorNodes = [...anchors].map((id) => a.byId.get(id));
-  const L = Math.min(...anchorNodes.map((n) => at(n).x));
-  const R = Math.max(...anchorNodes.map((n) => at(n).x + n.width));
-  const mid = (L + R) / 2;
-  const right = mates.filter((n) => at(n).x + n.width / 2 >= mid).sort((p, q) => at(p).x - at(q).x);
-  const left = mates.filter((n) => at(n).x + n.width / 2 < mid).sort((p, q) => at(q).x - at(p).x);
-  let cur = R + GAP;
-  for (const n of right) { if (at(n).x < cur) set(n, { x: Math.round(cur) }); cur = at(n).x + n.width + GAP; }
-  cur = L - GAP;
-  for (const n of left) { if (at(n).x + n.width > cur) set(n, { x: Math.round(cur - n.width) }); cur = at(n).x - GAP; }
+  lineUpMates(mates, at, set, L, L + total, frontY, obstacles, GAP);
+  return collectMoves(a, pos);
+}
 
-  const moves = {};
-  for (const [id, p] of pos) {
-    const n = a.byId.get(id);
-    if (Math.abs(n.x - p.x) > 0.5 || Math.abs(n.y - p.y) > 0.5) moves[id] = p;
-  }
-  return moves;
+/* Lay out only a card that was just pulled out of an existing card: the target appeared
+ * moments ago and the source is older. An arrow drawn between two old cards, a pasted pair
+ * and a pair that came in by sync (both ends new at once) move nothing. */
+function isNewChild(e, a, stamps, now) {
+  if (!a.byId.has(e.fromNode) || !a.byId.has(e.toNode)) return false;
+  if (a.children.has(e.toNode) || (a.parents.get(e.toNode) || []).length !== 1) return false;
+  const born = stamps[e.toNode];
+  if (!born || now - born > 15000) return false;
+  return (stamps[e.fromNode] || 0) < born;
 }
 
 /* A current card was dragged: the whole front row lines up at its new height.
- * The dragged card keeps its x; row neighbors get pushed aside if they overlap it.
+ * The dragged card keeps its x unless it now sits on a card; row neighbors get pushed aside.
  * The row never goes above any front card's parent, nor above the band it was dropped under. */
 function planRealign(a, id, gap, minY) {
   const GAP = gap || 20;
   const card = a.byId.get(id);
-  const front = a.active.filter((n) => (a.parents.get(n.id) || []).length);
+  const front = frontOf(a);
   if (!card || !front.some((n) => n.id === id)) return {};
-  const parentBottom = (n) => Math.max(...(a.parents.get(n.id) || [])
-    .map((p) => a.byId.get(p)).filter(Boolean).map((p) => p.y + p.height));
+  const frontIds = new Set(front.map((n) => n.id));
+  const obstacles = [...a.byId.values()].filter((n) => !frontIds.has(n.id));
+  const parentsOf = (n) => (a.parents.get(n.id) || []).map((p) => a.byId.get(p)).filter(Boolean);
+  const parentBottom = (n) => Math.max(...parentsOf(n).map((p) => p.y + p.height));
   const rowY = Math.round(Math.max(card.y, minY == null ? -Infinity : minY,
     ...front.map((n) => parentBottom(n) + GAP)));
 
   const pos = new Map();
   const at = (n) => pos.get(n.id) || { x: n.x, y: n.y };
   const set = (n, p) => pos.set(n.id, Object.assign({}, at(n), p));
-  for (const n of front) set(n, { y: rowY });
 
-  const mates = front.filter((n) => n.id !== id);
-  const L = card.x, R = card.x + card.width, mid = (L + R) / 2;
-  const right = mates.filter((n) => n.x + n.width / 2 >= mid).sort((p, q) => p.x - q.x);
-  const left = mates.filter((n) => n.x + n.width / 2 < mid).sort((p, q) => q.x - p.x);
-  let cur = R + GAP;
-  for (const n of right) { if (at(n).x < cur) set(n, { x: Math.round(cur) }); cur = at(n).x + n.width + GAP; }
-  cur = L - GAP;
-  for (const n of left) { if (at(n).x + n.width > cur) set(n, { x: Math.round(cur - n.width) }); cur = at(n).x - GAP; }
-
-  const moves = {};
-  for (const [nid, p] of pos) {
-    const n = a.byId.get(nid);
-    if (Math.abs(n.x - p.x) > 0.5 || Math.abs(n.y - p.y) > 0.5) moves[nid] = p;
+  let x = card.x;
+  if (blocker(x, rowY, card.width, card.height, obstacles, GAP)) {
+    const ps = parentsOf(card);
+    const clear = obstacles.filter((n) => !ps.includes(n));
+    x = findSlot(x, rowY, card.width, card.height, obstacles, GAP,
+      (cx) => ps.every((p) => !arrowHits(p, { x: cx, y: rowY, width: card.width, height: card.height }, clear, GAP / 2)));
   }
-  return moves;
+  set(card, { x, y: rowY });
+  lineUpMates(front.filter((n) => n.id !== id), at, set, x, x + card.width, rowY, obstacles, GAP);
+  return collectMoves(a, pos);
 }
 
 /* After a layout: a band never cuts a laid-out card. If one of `ids` starts above a band
@@ -538,6 +642,7 @@ module.exports = class WorklogTimeline extends Plugin {
   async onload() {
     this.settings = Object.assign({}, DEFAULTS, await this.loadData());
     this.settings.stamps = Object.assign({}, this.settings.stamps);
+    this.settings.archived = Object.assign({}, this.settings.archived);
     this.highlight = false;
     this.dirty = false;
     this.analysis = new WeakMap(); // view -> analyze() result
@@ -587,6 +692,8 @@ module.exports = class WorklogTimeline extends Plugin {
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
       const s = this.settings.stamps;
       if (s[oldPath]) { s[file.path] = s[oldPath]; delete s[oldPath]; this.dirty = true; }
+      const ar = this.settings.archived;
+      if (ar[oldPath]) { ar[file.path] = ar[oldPath]; delete ar[oldPath]; this.dirty = true; }
     }));
     this.registerEvent(this.app.vault.on("delete", (file) => {
       if (this.settings.stamps[file.path]) { delete this.settings.stamps[file.path]; this.dirty = true; }
@@ -724,8 +831,7 @@ module.exports = class WorklogTimeline extends Plugin {
       // both ends are real cards (Obsidian keeps the arrow id on drop).
       const added = edges.filter((e) => !seen.has(e.id) && nodes.has(e.fromNode) && nodes.has(e.toNode));
       for (const e of added) seen.add(e.id);
-      const fresh = added.filter((e) => a.byId.has(e.fromNode) && a.byId.has(e.toNode)
-        && !a.children.has(e.toNode) && (a.parents.get(e.toNode) || []).length === 1);
+      const fresh = added.filter((e) => isNewChild(e, a, stamps, now));
       if (this.settings.autoLayout && fresh.length && added.length <= 2) {
         const e = fresh[fresh.length - 1];
         const floor = this.floorFor(canvas, data, e.toNode);
@@ -736,6 +842,8 @@ module.exports = class WorklogTimeline extends Plugin {
       }
     }
 
+    const archived = new Set(this.settings.archived[path] || []);
+    for (const c of a.catalog.values()) c.archived = c.headers.some((h) => archived.has(h.id));
     this.analysis.set(view, a);
     if (!dragging) this.dropBandEdges(canvas, data);
     this.fitBands(canvas, data);
@@ -1066,6 +1174,14 @@ module.exports = class WorklogTimeline extends Plugin {
         .setIcon(isPaused ? "play" : "pause")
         .onClick(() => this.togglePause(view, name)));
     }
+    for (const name of names) {
+      const c = a.catalog.get(name);
+      if (!c) continue;
+      menu.addItem((item) => item
+        .setTitle(t(c.archived ? "menuUnarchive" : "menuArchive", { name: short(name) }))
+        .setIcon(c.archived ? "archive-restore" : "archive")
+        .onClick(() => this.toggleArchive(view, name)));
+    }
     if (targets.length === 1 && (a.parents.get(targets[0].id) || []).length) {
       menu.addItem((item) => item.setTitle(t("menuLayout")).setIcon("layout-grid")
         .onClick(() => this.layoutNode(canvas, targets[0].id)));
@@ -1101,6 +1217,26 @@ module.exports = class WorklogTimeline extends Plugin {
       return d;
     });
     new Notice(t(resume ? "resumed" : "paused", { name }));
+  }
+
+  /* Archive: a one-off project hides from the panel once it has no open tasks, and shows
+   * again under "Archive" on request. Kept per canvas by root card ids, so the card text stays
+   * clean and a renamed root keeps its flag. */
+  toggleArchive(view, name) {
+    const a = view && this.analysis.get(view);
+    const c = a && a.catalog.get(name);
+    if (!c) return;
+    const path = view.file.path;
+    const ids = new Set(this.settings.archived[path] || []);
+    const roots = c.headers.map((h) => h.id);
+    if (c.archived) for (const id of roots) ids.delete(id);
+    else for (const id of roots) ids.add(id);
+    // Forget roots that are gone from the canvas.
+    for (const id of [...ids]) if (!view.canvas.nodes.has(id)) ids.delete(id);
+    if (ids.size) this.settings.archived[path] = [...ids]; else delete this.settings.archived[path];
+    void this.save();
+    new Notice(t(c.archived ? "unarchived" : "archived", { name }));
+    this.tick();
   }
 
   /* Pause or resume single tasks: ⏸ at the start of the card's own text. */
@@ -1142,7 +1278,7 @@ module.exports = class WorklogTimeline extends Plugin {
       }
     }
     const key = !a ? "none" : view.file.path + "|" + [...sel.ids].join(",") + "|" + [...a.catalog.values()]
-      .map((c) => `${c.name}:${c.open}:${c.paused}:${c.headers.map((h) => h.id + h.sub).join(",")}:${c.last && c.last.id}:${[...c.openTasks, ...c.pausedTasks].map((n) => n.id + cleanName(n.text)).join(",")}`).join(";");
+      .map((c) => `${c.name}:${c.open}:${c.paused}:${c.archived}:${c.headers.map((h) => h.id + h.sub).join(",")}:${c.last && c.last.id}:${[...c.openTasks, ...c.pausedTasks].map((n) => n.id + cleanName(n.text)).join(",")}`).join(";");
     if (key === this.panelKey) return;
     this.panelKey = key;
     for (const leaf of leaves) if (leaf.view instanceof ProjectsView) leaf.view.render(view, a, sel);
@@ -1195,7 +1331,7 @@ module.exports = class WorklogTimeline extends Plugin {
 };
 
 class ProjectsView extends ItemView {
-  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.openSleeping = false; this.openLists = new Set(); }
+  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.openSections = new Set(); this.openLists = new Set(); }
   getViewType() { return PANEL_TYPE; }
   getDisplayText() { return t("panelTitle"); }
   getIcon() { return "layers"; }
@@ -1210,17 +1346,23 @@ class ProjectsView extends ItemView {
 
     const all = [...a.catalog.values()];
     const byName = (p, q) => p.name.localeCompare(q.name);
-    const working = all.filter((c) => !c.paused && c.open > 0).sort((p, q) => q.open - p.open || byName(p, q));
-    const paused = all.filter((c) => c.paused).sort(byName);
-    const sleeping = all.filter((c) => !c.paused && c.open === 0).sort(byName);
+    // An archived project hides once it has no open tasks; while it has some, it shows as usual.
+    const hidden = (c) => c.archived && c.open === 0;
+    const shown = all.filter((c) => !hidden(c));
+    const working = shown.filter((c) => !c.paused && c.open > 0).sort((p, q) => q.open - p.open || byName(p, q));
+    const paused = shown.filter((c) => c.paused).sort(byName);
+    const sleeping = shown.filter((c) => !c.paused && c.open === 0).sort(byName);
+    const archive = all.filter(hidden).sort(byName);
 
     const section = (title, list, collapsible) => {
       if (!list.length) return;
       let body = root;
       if (collapsible) {
         const det = root.createEl("details", { cls: "wl-p-section" });
-        det.open = this.openSleeping || list.some((c) => this.sel.names.has(c.name));
-        det.addEventListener("toggle", () => { this.openSleeping = det.open; });
+        det.open = this.openSections.has(collapsible) || list.some((c) => this.sel.names.has(c.name));
+        det.addEventListener("toggle", () => {
+          if (det.open) this.openSections.add(collapsible); else this.openSections.delete(collapsible);
+        });
         det.createEl("summary", { text: `${title} · ${list.length}` });
         body = det;
       } else {
@@ -1230,7 +1372,8 @@ class ProjectsView extends ItemView {
     };
     section(t("secWorking"), working, false);
     section(t("secPaused"), paused, false);
-    section(t("secSleeping"), sleeping, true);
+    section(t("secSleeping"), sleeping, "sleeping");
+    section(t("secArchived"), archive, "archive");
   }
 
   row(parent, view, c) {
@@ -1246,6 +1389,10 @@ class ProjectsView extends ItemView {
     const btn = head.createSpan({ cls: "wl-p-btn", text: c.paused ? "▶" : "⏸" });
     btn.setAttr("aria-label", t(c.paused ? "btnResume" : "btnPause"));
     btn.addEventListener("click", () => this.plugin.togglePause(view, c.name));
+    const arc = head.createSpan({ cls: "wl-p-btn wl-p-archive" + (c.archived ? " is-on" : "") });
+    if (typeof setIcon === "function") setIcon(arc, c.archived ? "archive-restore" : "archive"); else arc.setText("🗄");
+    arc.setAttr("aria-label", t(c.archived ? "btnUnarchive" : "btnArchive"));
+    arc.addEventListener("click", () => this.plugin.toggleArchive(view, c.name));
 
     if (c.headers.length) {
       const roots = row.createDiv({ cls: "wl-p-roots" });
@@ -1385,3 +1532,9 @@ class WorklogSettings extends PluginSettingTab {
       });
   }
 }
+
+/* Pure functions, for tests (tests/*.test.js). Obsidian only uses the class itself. */
+module.exports.core = {
+  analyze, isDone, parseRoot, cleanName, planLayout, planRealign, planBandPush, bandFloor,
+  isNewChild, arrowHits, findSlot,
+};

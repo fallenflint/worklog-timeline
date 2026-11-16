@@ -39,9 +39,16 @@ and the plugin keeps track of where you are.
   type it by hand.
 - **Auto-layout.** When you drag a new card out of a parent, it is centered under it
   and all open branches line up in one row. Creation and layout undo in a single step.
+  Only open branches move: done cards, roots, paused cards and other projects stay where they
+  are. If the spot under the parent is taken, or the arrow would run through someone else's
+  card, the new card goes to the nearest free spot beside it. Arrows drawn between existing
+  cards, pasted cards and cards that arrive by sync are left alone.
 - **Projects panel.** A side panel lists projects (in progress, paused, dormant)
   with a smooth jump to each project's work front (its newest open branch) or any of its roots.
   Each project has collapsible lists of its open and paused tasks, with pause and resume buttons.
+- **Archive.** For one-off projects: the 🗄 button in the panel or *Archive project* in the card
+  menu. An archived project stays in the list while it has open tasks and hides once they are
+  done; the collapsed *Archive* section at the bottom shows it on request.
 
 A card counts as done when it is green (color 4), starts with ❌, or its first line starts
 with ✅ / ☑ / `~~` / `- [x]` and it has no unchecked `- [ ]`.
@@ -53,6 +60,14 @@ Not in the community store yet. Manual install:
 1. Download `main.js`, `manifest.json` and `styles.css` from the latest release.
 2. Put them in `<vault>/.obsidian/plugins/worklog-timeline/`.
 3. Enable **Worklog Timeline** in *Settings → Community plugins*.
+
+## Tests
+
+The layout logic is covered by tests with no dependencies (Node 18+):
+
+```
+node --test tests/
+```
 
 ## Languages
 

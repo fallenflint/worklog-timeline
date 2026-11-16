@@ -129,3 +129,6 @@
 .canvas-node.wl-band .canvas-node-connection-point { display: none !important; }
 .canvas.is-connecting .canvas-node.wl-band,
 .canvas.is-connecting .canvas-node.wl-band * { pointer-events: none !important; }
+.wl-p-archive { display: inline-flex; align-items: center; opacity: 0.3; }
+.wl-p-archive svg { width: 14px; height: 14px; }
+.wl-p-row:hover .wl-p-archive, .wl-p-archive.is-on { opacity: 0.6; }
