@@ -28,7 +28,7 @@ and the plugin keeps track of where you are.
   per date. The label is plain text: rename it to a stage if you like.
 - **Creation dates.** Every new card gets a small timestamp, shown on hover or always.
 - **Projects.** A card belongs to the nearest root above it (a card with no incoming arrows).
-  Each project gets a color stripe, and open branches get a project tag.
+  Each project gets a color stripe, and open and finished branches get a project tag.
   `Project / Subsection` in a root's first line splits one project into several roots.
 - **Open-branch counter.** The status bar shows how many leaf cards are still open
   against your comfort limit. Click it to highlight them.
@@ -43,7 +43,7 @@ and the plugin keeps track of where you are.
   are. If the spot under the parent is taken, or the arrow would run through someone else's
   card, the new card goes to the nearest free spot beside it. Arrows drawn between existing
   cards, pasted cards and cards that arrive by sync are left alone.
-- **Projects panel.** A side panel lists projects (in progress, paused, dormant)
+- **Projects panel.** A side panel lists projects (in progress, paused, dormant), freshest first,
   with a smooth jump to each project's work front (its newest open branch) or any of its roots.
   Each project has collapsible lists of its open and paused tasks, with pause and resume buttons.
 - **Checklists.** A card with checkboxes turns green once every `- [ ]` is ticked, and gets its

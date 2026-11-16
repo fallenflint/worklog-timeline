@@ -66,7 +66,7 @@ const STRINGS = {
     setStamps: "Show creation dates on all cards",
     setStampsDesc: "Otherwise a date shows only on hover.",
     setProjects: "Project labels",
-    setProjectsDesc: "A colored stripe left of each card and a project tag under open branches.",
+    setProjectsDesc: "A colored stripe left of each card and a project tag under open and finished branches.",
     setAliases: "Project aliases",
     setAliasesDesc: "One rule per line: “Eve6 Demo = Eve6”. Left: a root's name. Right: the project it counts as.",
     setAutoBand: "Automatic date band",
@@ -136,7 +136,7 @@ const STRINGS = {
     setStamps: "Показывать даты всех карточек",
     setStampsDesc: "Иначе дата видна только при наведении.",
     setProjects: "Метки проектов",
-    setProjectsDesc: "Цветная полоска слева у карточек и ярлычок проекта под открытыми ветками.",
+    setProjectsDesc: "Цветная полоска слева у карточек и ярлычок проекта под открытыми и закрытыми ветками.",
     setAliases: "Склейка проектов",
     setAliasesDesc: "По строке на правило: «Eve6 Demo = Eve6». Слева — как называется корень, справа — каким проектом считать.",
     setAutoBand: "Рубеж даты автоматически",
@@ -425,7 +425,7 @@ function analyze(data, aliases, stamps) {
   // Catalog per project: roots (top to bottom), open branch count and the latest card.
   const catalog = new Map();
   const entry = (name) => {
-    if (!catalog.has(name)) catalog.set(name, { name, headers: [], cards: [], open: 0, openTasks: [], pausedTasks: [], last: null, paused: paused.has(name) });
+    if (!catalog.has(name)) catalog.set(name, { name, headers: [], cards: [], open: 0, openTasks: [], pausedTasks: [], last: null, lastTs: 0, paused: paused.has(name) });
     return catalog.get(name);
   };
   for (const [id, name] of header) entry(name).headers.push(Object.assign({}, byId.get(id), { sub: headerSub.get(id) }));
@@ -446,10 +446,17 @@ function analyze(data, aliases, stamps) {
     const openCards = c.cards.filter((n) => openIds.has(n.id));
     const pool = activeCards.length ? activeCards : (openCards.length ? openCards : c.cards);
     const ts = (n) => stamps[n.id] || 0;
+    // Last activity = the newest creation stamp among the project's cards; for cards made
+    // before stamping, the lowest card on the timeline (time runs down the canvas).
+    c.lastTs = c.cards.reduce((m, n) => Math.max(m, ts(n)), 0);
+    c.lastY = c.cards.reduce((m, n) => Math.max(m, n.y + (n.height || 0)), -Infinity);
     c.last = pool.reduce((best, n) => (!best || ts(n) > ts(best) || (ts(n) === ts(best) && n.y > best.y) ? n : best), null);
   }
 
-  return { byId, parents, children, hdrs, projects, open, active, activeIds, pausedIds, rootIds, marked, perProject, catalog };
+  // Done branch ends keep their project tag, so a finished task still says whose it is.
+  const doneEnds = new Set(nodes.filter((n) => !children.has(n.id) && isDone(n)).map((n) => n.id));
+
+  return { byId, parents, children, hdrs, projects, open, active, activeIds, doneEnds, pausedIds, rootIds, marked, perProject, catalog };
 }
 
 /* ---------- auto-layout ----------
@@ -912,7 +919,7 @@ module.exports = class WorklogTimeline extends Plugin {
       } else if (stripe) stripe.remove();
 
       let chip = el.querySelector(":scope > .wl-chip");
-      if (names.length && a.activeIds.has(id)) {
+      if (names.length && (a.activeIds.has(id) || a.doneEnds.has(id))) {
         if (!chip) chip = el.createDiv({ cls: "wl-chip" });
         if (chip.dataset.key !== key) {
           chip.empty();
@@ -1403,14 +1410,15 @@ class ProjectsView extends ItemView {
     if (!a) { root.createDiv({ cls: "wl-p-empty", text: t("panelEmpty") }); return; }
 
     const all = [...a.catalog.values()];
-    const byName = (p, q) => p.name.localeCompare(q.name);
+    // Freshest first: by the newest card's creation stamp, then by how low it sits, then by name.
+    const byRecent = (p, q) => q.lastTs - p.lastTs || q.lastY - p.lastY || p.name.localeCompare(q.name);
     // An archived project hides once it has no open tasks; while it has some, it shows as usual.
     const hidden = (c) => c.archived && c.open === 0;
     const shown = all.filter((c) => !hidden(c));
-    const working = shown.filter((c) => !c.paused && c.open > 0).sort((p, q) => q.open - p.open || byName(p, q));
-    const paused = shown.filter((c) => c.paused).sort(byName);
-    const sleeping = shown.filter((c) => !c.paused && c.open === 0).sort(byName);
-    const archive = all.filter(hidden).sort(byName);
+    const working = shown.filter((c) => !c.paused && c.open > 0).sort(byRecent);
+    const paused = shown.filter((c) => c.paused).sort(byRecent);
+    const sleeping = shown.filter((c) => !c.paused && c.open === 0).sort(byRecent);
+    const archive = all.filter(hidden).sort(byRecent);
 
     const section = (title, list, collapsible) => {
       if (!list.length) return;
