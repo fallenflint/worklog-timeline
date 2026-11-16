@@ -1,4 +1,4 @@
-/* Checklist → green tests. Run: node --test tests/ */
+/* Done marks and checklists. Run: node --test tests/ */
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const Module = require("node:module");
@@ -12,7 +12,7 @@ Module._load = function (request, ...rest) {
   return realLoad.call(this, request, ...rest);
 };
 globalThis.window = { localStorage: { getItem: () => null } };
-const { checklistState, checklistColor } = require("../main.js").core;
+const { checklistState, checklistDone, doneMark, setDoneMark, isDone } = require("../main.js").core;
 
 test("checklist state", () => {
   assert.equal(checklistState("plain text"), null);
@@ -22,22 +22,48 @@ test("checklist state", () => {
   assert.equal(checklistState("text with [ ] inside a line"), null);
 });
 
-test("ticking the last box turns the card green, unticking restores its color", () => {
-  assert.equal(checklistColor(false, true, "2", undefined), "4");
-  assert.equal(checklistColor(false, true, undefined, undefined), "4");
-  assert.equal(checklistColor(true, false, "4", "2"), "2");
-  assert.equal(checklistColor(true, false, "4", undefined), "");
+test("done = ✅ or ❌ at the start of the first line; color means nothing for text", () => {
+  assert.equal(isDone({ type: "text", text: "✅ ship it" }), true);
+  assert.equal(isDone({ type: "text", text: "\n❌ dropped" }), true);
+  assert.equal(isDone({ type: "text", text: "⏸ ✅ x" }), true);
+  assert.equal(isDone({ type: "text", text: "## ✅ Title" }), true);
+  assert.equal(isDone({ type: "text", text: "✅\n- [x] a" }), true);
+  assert.equal(isDone({ type: "text", text: "green but open", color: "4" }), false);
+  assert.equal(isDone({ type: "text", text: "- [x] a\n- [x] b" }), false);
+  assert.equal(isDone({ type: "text", text: "ship ✅ later" }), false);
+  assert.equal(isDone({ type: "file", file: "a.md", color: "4" }), true, "files have no text: green still counts");
+  assert.equal(isDone({ type: "file", file: "a.md" }), false);
 });
 
-test("no change without a transition", () => {
-  assert.equal(checklistColor(true, true, "4", undefined), undefined, "still complete");
-  assert.equal(checklistColor(false, false, "2", undefined), undefined, "still open");
-  assert.equal(checklistColor(undefined, false, "4", undefined), undefined, "a green card with open boxes, first seen, stays green");
-  assert.equal(checklistColor(true, false, "1", "2"), undefined, "recolored by hand after turning green: left alone");
-  assert.equal(checklistColor(true, true, "1", undefined), undefined, "recolored by hand while complete: left alone");
+test("setDoneMark puts ✅ on and takes it off", () => {
+  assert.equal(setDoneMark("task", true), "✅ task");
+  assert.equal(setDoneMark("✅ task", true), "✅ task");
+  assert.equal(setDoneMark("❌ task", true), "❌ task");
+  assert.equal(setDoneMark("⏸ task", true), "⏸ ✅ task");
+  assert.equal(setDoneMark("# Title\nbody", true), "# ✅ Title\nbody");
+  assert.equal(setDoneMark("- [x] a\n- [x] b", true), "✅\n- [x] a\n- [x] b", "a list stays a list");
+  for (const s of ["task", "⏸ task", "# Title\nbody", "- [x] a\n- [x] b", "line one\nline two"]) {
+    assert.equal(setDoneMark(setDoneMark(s, true), false), s, "round trip: " + s);
+  }
+  assert.equal(setDoneMark("❌ task", false), "❌ task");
 });
 
-test("a complete list seen for the first time turns green", () => {
-  assert.equal(checklistColor(undefined, true, undefined, undefined), "4");
-  assert.equal(checklistColor(undefined, true, "4", undefined), undefined);
+test("ticking the last box adds ✅, unticking takes it off", () => {
+  assert.equal(checklistDone(false, true, null), true);
+  assert.equal(checklistDone(true, false, "✅"), false);
+});
+
+test("no change without a transition, and ❌ is never touched", () => {
+  assert.equal(checklistDone(true, true, "✅"), undefined, "still complete");
+  assert.equal(checklistDone(false, false, null), undefined, "still open");
+  assert.equal(checklistDone(undefined, false, "✅"), undefined, "a ✅ card with open boxes, first seen, stays done");
+  assert.equal(checklistDone(true, false, null), undefined, "✅ removed by hand: left alone");
+  assert.equal(checklistDone(true, true, null), undefined, "✅ removed by hand while complete: left alone");
+  assert.equal(checklistDone(true, false, "❌"), undefined, "cancelled stays cancelled");
+  assert.equal(checklistDone(false, true, "❌"), undefined);
+});
+
+test("a complete list seen for the first time gets ✅", () => {
+  assert.equal(checklistDone(undefined, true, null), true);
+  assert.equal(checklistDone(undefined, true, "✅"), undefined);
 });

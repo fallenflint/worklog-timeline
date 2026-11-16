@@ -23,7 +23,7 @@ function canvas() {
   const nodes = [], edges = [];
   const api = {
     card(id, x, y, opts = {}) {
-      nodes.push({ id, type: "text", text: opts.text || id, x, y, width: opts.w || 250, height: opts.h || 60, color: opts.done ? "4" : undefined });
+      nodes.push({ id, type: "text", text: opts.text || (opts.done ? "✅ " + id : id), x, y, width: opts.w || 250, height: opts.h || 60 });
       return api;
     },
     arrow(from, to) { edges.push({ id: from + ">" + to, fromNode: from, toNode: to }); return api; },

@@ -243,22 +243,38 @@ function bandGeometry(real) {
 }
 
 /* ---------- done / open ----------
- * A card is done if it is green (color 4), starts with ❌, or its first line is marked
- * ✅ / ☑ / ~~ / - [x] and there is no unchecked - [ ] anywhere. */
+ * A text card is done when its first line starts with ✅ (done) or ❌ (cancelled); a ⏸ or a
+ * heading # in front of the mark is fine. Color means nothing for text cards. File and link
+ * cards can't carry a mark, so for them green (color 4) still means done. */
+function doneMark(text) {
+  const first = ((text || "").split("\n").map((s) => s.trim()).find(Boolean)) || "";
+  const m = /^(?:⏸️?\s*)?(?:#+\s*)?(✅|❌)/.exec(first);
+  return m ? m[1] : null;
+}
+
 function isDone(n) {
-  if (String(n.color) === "4") return true;
-  const text = n.text || "";
-  const first = ((text.split("\n").map((s) => s.trim()).find(Boolean)) || "").replace(/^⏸️?\s*/, "");
-  if (first.startsWith("❌")) return true;
-  const firstDone = /^(✅|☑|~~|[-*+]\s+\[[^ \]]\])/.test(first);
-  const unchecked = /^\s*[-*+]\s+\[ \]/m.test(text);
-  return firstDone && !unchecked;
+  if (n.type && n.type !== "text") return String(n.color) === "4";
+  return !!doneMark(n.text);
+}
+
+/* Put ✅ on a card's text or take it off. When the first line is a list item or a quote, the
+ * mark goes on a line of its own, so the list stays a list. ❌ is never added or removed here. */
+function setDoneMark(text, on) {
+  text = text || "";
+  if (!on) return text.replace(/^(\s*(?:⏸️?\s*)?(?:#+\s*)?)✅️?[ \t]*\n?/, "$1");
+  if (doneMark(text)) return text;
+  const lead = /^\s*/.exec(text)[0];
+  const body = text.slice(lead.length);
+  const m = /^(⏸️?\s*)?(#+\s+)?/.exec(body);
+  const rest = body.slice(m[0].length);
+  const block = !m[2] && /^(?:[-*+]\s|\d+[.)]\s|>)/.test(rest);
+  return lead + m[0] + (block ? "✅\n" : "✅ ") + rest;
 }
 
 /* ---------- checklists ----------
- * A card with checkboxes turns green when all of them are ticked and loses the green when one
- * is unticked again. Only a change of the checkboxes recolors a card, so a card you colored by
- * hand keeps its color until you tick or untick something. */
+ * A card with checkboxes gets ✅ when all of them are ticked and loses it when one is unticked
+ * again. Only a change of the checkboxes touches the mark, so a ✅ you added or removed by hand
+ * stays until you tick or untick something. */
 const CHECKBOX = /^\s*(?:[-*+]|\d+[.)])\s+\[(.)\]/gm;
 
 /* null: no checkboxes; true: all ticked; false: at least one open. */
@@ -271,13 +287,12 @@ function checklistState(text) {
   return any ? true : null;
 }
 
-/* The color a card should get after its checklist went from `prev` to `now`, or undefined
- * to leave it. `prev` is undefined the first time a card is seen: an already complete list
- * turns green then. `before` is the color the card had before it turned green. */
-function checklistColor(prev, now, color, before) {
-  const green = String(color) === "4";
-  if (now === true && prev !== true && !green) return "4";
-  if (now === false && prev === true && green) return before || "";
+/* true: put ✅ on, false: take it off, undefined: leave the card alone, after its checklist
+ * went from `prev` to `now`. `prev` is undefined the first time a card is seen: an already
+ * complete list gets ✅ then. `mark` is the card's current doneMark(). */
+function checklistDone(prev, now, mark) {
+  if (now === true && prev !== true && !mark) return true;
+  if (now === false && prev === true && mark === "✅") return false;
   return undefined;
 }
 
@@ -286,11 +301,11 @@ function checklistColor(prev, now, color, before) {
  * A header is a root (no incoming arrows, has outgoing ones) or a one-line card whose text
  * matches the name of some root. */
 function cleanName(text) {
-  const line = (text || "").split("\n").map((s) => s.trim()).find(Boolean) || "";
+  // A ✅ or ❌ on a line of its own (over a checklist) is not the name.
+  const line = (text || "").split("\n").map((s) => s.trim()).find((s) => s && !/^(✅|❌)️?$/.test(s)) || "";
   return line
     .replace(/^[-*+]\s+\[.\]\s*/, "")
-    .replace(/^(✅|❌|☑|⏸️?)\s*/, "")
-    .replace(/^#+\s*/, "")
+    .replace(/^(?:(?:✅|❌|☑|⏸️?|#+)\s*)+/, "")
     .replace(/\*\*|__/g, "")
     .replace(/[:：]\s*$/, "")
     .trim();
@@ -681,7 +696,7 @@ module.exports = class WorklogTimeline extends Plugin {
     this.analysis = new WeakMap(); // view -> analyze() result
     this.seenEdges = new WeakMap(); // view -> Set(edge id)
     this.emptySince = new WeakMap(); // view -> time it was first seen empty
-    this.checklists = new WeakMap(); // view -> Map(id -> {state, before})
+    this.checklists = new WeakMap(); // view -> Map(id -> checklistState)
     this.lastView = null;
     this.panelKey = "";
 
@@ -934,8 +949,8 @@ module.exports = class WorklogTimeline extends Plugin {
     }
   }
 
-  /* All checkboxes ticked → green; one unticked again → the color it had before. A card being
-   * edited waits until editing ends, so typing "- [x]" doesn't recolor it mid-word. */
+  /* All checkboxes ticked → ✅; one unticked again → the ✅ comes off. A card being edited
+   * waits until editing ends, so typing "- [x]" doesn't change it mid-word. */
   syncChecklists(canvas, view, data) {
     if (!this.checklists.has(view)) this.checklists.set(view, new Map());
     const seen = this.checklists.get(view);
@@ -946,20 +961,16 @@ module.exports = class WorklogTimeline extends Plugin {
       if (!node || node.isEditing) continue;
       const now = checklistState(n.text);
       const prev = seen.get(n.id);
-      if (now === null) { if (prev) seen.delete(n.id); continue; }
-      const color = checklistColor(prev && prev.state, now, n.color, prev && prev.before);
-      // Remember the color under the green; a card that was already green has none to go back to.
-      const before = now !== true ? undefined
-        : prev && prev.state === true ? prev.before
-        : String(n.color) === "4" ? undefined : n.color;
-      seen.set(n.id, { state: now, before });
-      if (color === undefined || typeof node.setData !== "function") continue;
+      if (now === null) { if (prev !== undefined) seen.delete(n.id); continue; }
+      seen.set(n.id, now);
+      const on = checklistDone(prev, now, doneMark(n.text));
+      if (on === undefined || typeof node.setData !== "function") continue;
       const d = Object.assign({}, node.getData());
-      if (color) d.color = color; else delete d.color;
+      d.text = setDoneMark(d.text, on);
       node.setData(d);
       changed = true;
     }
-    // One history step for the recolor, so ctrl+z can take the green back.
+    // One history step for the change, so ctrl+z can take the ✅ back.
     if (changed && typeof canvas.requestSave === "function") canvas.requestSave();
     return changed;
   }
@@ -1208,10 +1219,14 @@ module.exports = class WorklogTimeline extends Plugin {
     const many = targets.length > 1 ? ` (${targets.length})` : "";
 
     menu.addItem((item) => item.setTitle(t("menuDone") + many).setIcon("check-circle")
-      .onClick(() => this.updateNodes(canvas, targets, (d) => Object.assign(d, { color: "4" }))));
+      .onClick(() => this.updateNodes(canvas, targets, (d) => {
+        if (d.type === "text") d.text = setDoneMark(d.text, true);
+        else d.color = "4";
+        return d;
+      })));
     menu.addItem((item) => item.setTitle(t("menuCancel") + many).setIcon("x-circle")
       .onClick(() => this.updateNodes(canvas, targets, (d) => {
-        if (d.type === "text" && !(d.text || "").trimStart().startsWith("❌")) d.text = "❌ " + (d.text || "");
+        if (d.type === "text" && doneMark(d.text) !== "❌") d.text = "❌ " + setDoneMark(d.text, false).trimStart();
         else if (d.type !== "text") d.color = "4";
         return d;
       })));
@@ -1602,5 +1617,5 @@ class WorklogSettings extends PluginSettingTab {
 /* Pure functions, for tests (tests/*.test.js). Obsidian only uses the class itself. */
 module.exports.core = {
   analyze, isDone, parseRoot, cleanName, planLayout, planRealign, planBandPush, bandFloor,
-  isNewChild, arrowHits, findSlot, checklistState, checklistColor,
+  isNewChild, arrowHits, findSlot, checklistState, checklistDone, doneMark, setDoneMark,
 };
